@@ -15,14 +15,10 @@ logger = logging.getLogger(__name__)
 
 class Engine:
     """
-    Very simple polling engine:
-    - Polls quotes for a list of symbols
-    - Feeds them into all strategies
-    - Passes the resulting orders to OrderManager
+    Engine with optional AI controller.
 
     If `paper_cash` is set and OrderManager.live is False, the engine
-    simulates a paper account with that cash amount, regardless of the
-    real Wealthsimple cash balance.
+    simulates a paper account with that cash amount.
 
     In DRY-RUN mode, risk checks are done against the paper positions
     maintained by ExecutionTracker, not against live WS holdings.
@@ -36,6 +32,7 @@ class Engine:
         order_manager: OrderManager,
         poll_interval: float = 2.0,
         paper_cash: Optional[float] = None,
+        ai_controller: Optional[Any] = None,
     ) -> None:
         self.client = client
         self.strategies = strategies
@@ -43,16 +40,11 @@ class Engine:
         self.order_manager = order_manager
         self.poll_interval = poll_interval
         self.paper_cash = paper_cash
+        self.ai_controller = ai_controller
 
-    # ------------------------------------------------------------------ #
-    # Helpers
     # ------------------------------------------------------------------ #
 
     def _make_sim_snapshot(self, snapshot: PortfolioSnapshot) -> PortfolioSnapshot:
-        """
-        For DRY-RUN mode, optionally override cash/net worth with `paper_cash`.
-        For live mode or when paper_cash is None, just return the real snapshot.
-        """
         if self.order_manager.live or self.paper_cash is None:
             return snapshot
 
@@ -64,44 +56,32 @@ class Engine:
         )
 
     def _positions_for_risk(self, ws_positions: Mapping[str, Any]) -> Mapping[str, Any]:
-        """
-        Decide which positions snapshot to pass into RiskManager:
-
-        - live mode: use actual Wealthsimple positions
-        - DRY-RUN: use ExecutionTracker positions (paper positions)
-        """
         tracker = getattr(self.order_manager, "execution_tracker", None)
         if self.order_manager.live or tracker is None:
             return ws_positions
         return tracker.summary()
 
     # ------------------------------------------------------------------ #
-    # Main loop
-    # ------------------------------------------------------------------ #
 
     def run_forever(self) -> None:
-        """
-        Main loop. Gracefully stops on KeyboardInterrupt (Ctrl+C).
-        """
         logger.info(
             "Engine loop starting (live=%s, paper_cash=%s)",
             self.order_manager.live,
             self.paper_cash,
         )
+        loop_idx = 0
         try:
             while True:
-                # Real snapshot + current holdings from Wealthsimple
+                loop_idx += 1
+
                 real_snapshot = self.client.get_portfolio_snapshot()
                 ws_positions = self.client.get_equity_positions()
 
                 tracker = getattr(self.order_manager, "execution_tracker", None)
                 if tracker is not None:
-                    # Seed tracker once from live holdings
                     tracker.seed_from_positions(ws_positions)
 
-                # Snapshot actually used for risk (may be paper-cash)
                 snapshot = self._make_sim_snapshot(real_snapshot)
-                # Positions actually used for risk (paper vs live)
                 positions_for_risk = self._positions_for_risk(ws_positions)
 
                 for sym in self.symbols:
@@ -115,7 +95,14 @@ class Engine:
                                 oi, quote, snapshot, positions_for_risk
                             )
 
-                # Engine-level PnL summary (paper positions)
+                # AI controller gets full view of current state and can tweak
+                if self.ai_controller is not None and tracker is not None:
+                    self.ai_controller.on_loop(
+                        strategies=self.strategies,
+                        risk_config=self.order_manager.risk_manager.config,
+                        tracker=tracker,
+                    )
+
                 if tracker is not None:
                     tracker.log_summary()
 

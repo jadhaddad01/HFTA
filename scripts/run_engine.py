@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
+from HFTA.ai.controller import AIController
 from HFTA.broker.client import WealthsimpleClient
 from HFTA.core.engine import Engine
 from HFTA.core.execution_tracker import ExecutionTracker
@@ -21,7 +22,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
 )
 
-# Simple registry so configs can refer to strategies by string
 STRATEGY_REGISTRY = {
     "micro_market_maker": MicroMarketMaker,
     "micro_trend_scalper": MicroTrendScalper,
@@ -51,6 +51,21 @@ def build_strategies(cfg: Dict[str, Any]) -> List[Any]:
         strategies.append(cls(name=name, config=s_conf))
 
     return strategies
+
+
+def build_ai_controller(cfg: Dict[str, Any]) -> AIController | None:
+    ai_cfg = cfg.get("ai") or {}
+    enabled = bool(ai_cfg.get("enabled", False))
+    if not enabled:
+        return None
+
+    return AIController(
+        model=ai_cfg.get("model", "gpt-4.1-mini"),
+        interval_loops=int(ai_cfg.get("interval_loops", 12)),
+        temperature=float(ai_cfg.get("temperature", 0.2)),
+        max_output_tokens=int(ai_cfg.get("max_output_tokens", 512)),
+        enabled=True,
+    )
 
 
 def main() -> None:
@@ -85,10 +100,11 @@ def main() -> None:
         client=client,
         risk_manager=risk_manager,
         execution_tracker=execution_tracker,
-        live=False,  # still DRY-RUN; live mode will come later
+        live=False,  # still DRY-RUN; live mode comes later
     )
 
     strategies = build_strategies(cfg)
+    ai_controller = build_ai_controller(cfg)
 
     engine = Engine(
         client=client,
@@ -97,6 +113,7 @@ def main() -> None:
         order_manager=order_manager,
         poll_interval=poll_interval,
         paper_cash=paper_cash,
+        ai_controller=ai_controller,
     )
 
     print(

@@ -30,5 +30,12 @@
         "max_position": 5
       }
     }
-  ]
+  ],
+  "ai": {
+    "enabled": true,
+    "model": "gpt-4.1-mini",
+    "interval_loops": 12,
+    "temperature": 0.2,
+    "max_output_tokens": 512
+  }
 }
