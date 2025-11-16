@@ -1,6 +1,7 @@
 # HFTA/core/engine.py
 
 from __future__ import annotations
+
 import logging
 import time
 from typing import List
@@ -29,14 +30,14 @@ class Engine:
     ) -> None:
         self.client = client
         self.strategies = strategies
-        self.symbols = symbols
+        self.symbols = [s.upper() for s in symbols]
         self.poll_interval = poll_interval
         self.live = live
 
     def _handle_order(self, oi: OrderIntent) -> None:
         logger.info("OrderIntent: %s", oi)
         if not self.live:
-            # Dry-run: just log
+            # Dry-run mode: do not actually send orders
             return
 
         self.client.place_equity_order(

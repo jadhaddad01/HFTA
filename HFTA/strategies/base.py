@@ -3,6 +3,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+
 from HFTA.broker.client import Quote
 
 
@@ -27,6 +28,6 @@ class Strategy:
 
     def on_quote(self, quote: Quote) -> List[OrderIntent]:
         """
-        Called on each quote update. Return a list of order intents.
+        Called on each quote update. Should return a list of OrderIntent.
         """
         raise NotImplementedError

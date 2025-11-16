@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from typing import Any, Dict, List
+
 from HFTA.strategies.base import Strategy, OrderIntent
 from HFTA.broker.client import Quote
 
@@ -15,20 +16,27 @@ class MicroMarketMaker(Strategy):
 
     def __init__(self, name: str, config: Dict[str, Any]) -> None:
         super().__init__(name, config)
-        self.symbol = config["symbol"]
+        self.symbol = config["symbol"].upper()
         self.max_inventory = config.get("max_inventory", 5)
-        self.spread = config.get("spread", 0.05)          # absolute price width around mid
+        # absolute price distance around mid (e.g. 0.05 = 5 cents)
+        self.spread = config.get("spread", 0.05)
         self.order_quantity = config.get("order_quantity", 1)
-        self.position = 0.0
+        self.position = 0.0  # strategy's view of current position
 
     def update_position(self, new_position: float) -> None:
         self.position = new_position
 
     def on_quote(self, quote: Quote) -> List[OrderIntent]:
-        if quote.symbol != self.symbol or quote.bid is None or quote.ask is None:
+        # Only handle our symbol
+        if quote.symbol.upper() != self.symbol:
             return []
 
+        if quote.bid is None or quote.ask is None:
+            return []
+
+        # quote.bid and quote.ask are floats thanks to the broker wrapper
         mid = (quote.bid + quote.ask) / 2.0
+
         bid_price = round(mid - self.spread, 2)
         ask_price = round(mid + self.spread, 2)
 

@@ -1,9 +1,10 @@
 # HFTA/broker/client.py
 
 from __future__ import annotations
+
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from HFTA.wealthsimple_v2 import WealthsimpleV2
 
@@ -28,6 +29,26 @@ class PortfolioSnapshot:
     currency: str
     net_worth: float
     cash_available: float
+
+
+def _to_float(val: Any) -> Optional[float]:
+    """
+    Safely convert Wealthsimple values to float.
+    Handles:
+      - None
+      - strings like "123.45"
+      - dicts like {"amount": "123.45", "currency": "CAD"}
+    """
+    if val is None:
+        return None
+
+    if isinstance(val, dict) and "amount" in val:
+        val = val["amount"]
+
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
 
 
 class WealthsimpleClient:
@@ -56,6 +77,7 @@ class WealthsimpleClient:
         if not accounts:
             raise RuntimeError("No accounts returned from Wealthsimple API.")
         for acc in accounts:
+            # Adjust key names if needed based on actual structure
             if acc.get("status") == "OPEN":
                 return acc["id"]
         return accounts[0]["id"]
@@ -73,16 +95,19 @@ class WealthsimpleClient:
         if key in self._security_cache:
             return self._security_cache[key]
 
+        # Try helper first
         try:
             sec_id = self.ws.get_ticker_id(symbol, exchange=exchange)
         except Exception:
+            # Fallback search
             results = self.ws.search_securities(symbol)
             cand_id = None
             for r in results:
                 stock = r.get("stock", {})
                 if stock.get("symbol", "").upper() == symbol.upper():
-                    cand_id = r["id"]
-                    break
+                    if not exchange or stock.get("primaryExchange") == exchange:
+                        cand_id = r["id"]
+                        break
             if not cand_id and results:
                 cand_id = results[0]["id"]
             if not cand_id:
@@ -93,17 +118,26 @@ class WealthsimpleClient:
         return sec_id
 
     def get_quote(self, symbol: str, exchange: Optional[str] = None) -> Quote:
+        """
+        Returns a Quote with numeric bid/ask/last (floats or None).
+        """
         sec_id = self.resolve_security_id(symbol, exchange)
         q = self.ws.get_security_quote(sec_id, currency=self.currency)
+
+        bid = _to_float(q.get("bid") or q.get("bid_price") or q.get("bidPrice"))
+        ask = _to_float(q.get("ask") or q.get("ask_price") or q.get("askPrice"))
+        last = _to_float(q.get("price") or q.get("last") or q.get("lastPrice"))
+        bid_size = _to_float(q.get("bidSize") or q.get("bid_size"))
+        ask_size = _to_float(q.get("askSize") or q.get("ask_size"))
 
         return Quote(
             symbol=symbol.upper(),
             security_id=sec_id,
-            bid=q.get("bid"),
-            ask=q.get("ask"),
-            last=q.get("price") or q.get("last"),
-            bid_size=q.get("bidSize") or q.get("bid_size"),
-            ask_size=q.get("askSize") or q.get("ask_size"),
+            bid=bid,
+            ask=ask,
+            last=last,
+            bid_size=bid_size,
+            ask_size=ask_size,
             timestamp=q.get("timestamp"),
         )
 
@@ -112,17 +146,26 @@ class WealthsimpleClient:
     # ------------------------------------------------------------------ #
 
     def get_portfolio_snapshot(self) -> PortfolioSnapshot:
-        fin = self.ws.get_account_financials([self._account_id], currency=self.currency)
-        f = fin[0] if isinstance(fin, list) else fin["financials"][0]
+        """
+        Basic snapshot with net worth and cash.
+        """
+        fin_raw = self.ws.get_account_financials([self._account_id], currency=self.currency)
 
-        net_worth = f["netWorth"]["amount"]
-        cash_available = f["buyingPower"]["amount"]
+        if isinstance(fin_raw, dict) and "financials" in fin_raw:
+            fin = fin_raw["financials"][0]
+        elif isinstance(fin_raw, list):
+            fin = fin_raw[0]
+        else:
+            fin = fin_raw
+
+        net_worth = _to_float(fin.get("netWorth"))
+        cash_available = _to_float(fin.get("buyingPower"))
 
         return PortfolioSnapshot(
             account_id=self._account_id,
             currency=self.currency,
-            net_worth=net_worth,
-            cash_available=cash_available,
+            net_worth=net_worth or 0.0,
+            cash_available=cash_available or 0.0,
         )
 
     # ------------------------------------------------------------------ #
@@ -146,6 +189,15 @@ class WealthsimpleClient:
         if side not in {"buy", "sell"}:
             raise ValueError("side must be 'buy' or 'sell'")
 
+        logger.info(
+            "Placing %s %s: %s x %s @ %s",
+            side,
+            order_type,
+            quantity,
+            symbol,
+            limit_price,
+        )
+
         if order_type == "market":
             if side == "buy":
                 return self.ws.market_buy(account_id, sec_id, quantity)
@@ -154,7 +206,7 @@ class WealthsimpleClient:
 
         if order_type == "limit":
             if limit_price is None:
-                raise ValueError("limit_price required for limit")
+                raise ValueError("limit_price required for limit orders")
             if side == "buy":
                 return self.ws.limit_buy(account_id, sec_id, quantity, limit_price)
             else:

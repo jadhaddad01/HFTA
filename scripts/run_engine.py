@@ -1,6 +1,7 @@
 # scripts/run_engine.py
 
 from __future__ import annotations
+
 import logging
 
 from HFTA.broker.client import WealthsimpleClient
@@ -21,18 +22,17 @@ def main() -> None:
         config={
             "symbol": "AAPL",
             "max_inventory": 2,
-            "spread": 0.05,
+            "spread": 0.05,         # 5 cents around mid
             "order_quantity": 1,
         },
     )
 
-    # Start in dry-run mode (live=False): it will NOT send orders yet.
     engine = Engine(
         client=client,
         strategies=[mm],
         symbols=["AAPL"],
         poll_interval=5.0,
-        live=False,
+        live=False,                # DRY-RUN: no real orders yet
     )
 
     print("Starting HFTA engine in DRY-RUN mode. Ctrl+C to stop.")
