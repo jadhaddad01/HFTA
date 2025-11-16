@@ -1,5 +1,5 @@
 """
-Wealthsimple API v2 - Unofficial GraphQL-based API Client
+Wealthsimple API v2 - Unofficial GraphQL-based API Client - To be used for HFTA
 
 This module provides an unofficial Python client for the Wealthsimple platform
 using their GraphQL API. It supports authentication, security search, trading,
