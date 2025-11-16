@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Mapping, Any
 
 from HFTA.strategies.base import OrderIntent
 
@@ -37,6 +37,37 @@ class ExecutionTracker:
         self.positions: Dict[str, PositionState] = {}
         self.fills: List[Fill] = []
         self._loop_counter: int = 0
+        self._seeded: bool = False
+
+    # ------------------------------------------------------------------ #
+    # Seeding from live holdings
+    # ------------------------------------------------------------------ #
+
+    def seed_from_positions(self, positions: Mapping[str, Any]) -> None:
+        """
+        Initialize positions from a holdings mapping:
+            { 'AAPL': Holding(...), ... }
+        Only runs once; later calls are ignored.
+        """
+        if self._seeded:
+            return
+
+        for sym, h in positions.items():
+            qty = getattr(h, "quantity", 0.0)
+            avg = getattr(h, "avg_price", 0.0) or 0.0
+            try:
+                qty = float(qty)
+            except (TypeError, ValueError):
+                qty = 0.0
+            if qty == 0:
+                continue
+            self.positions[sym.upper()] = PositionState(
+                quantity=qty,
+                avg_price=float(avg),
+                realized_pnl=0.0,
+            )
+
+        self._seeded = True
 
     # ------------------------------------------------------------------ #
     # Recording fills
@@ -75,27 +106,23 @@ class ExecutionTracker:
 
         if side == "buy":
             if pos.quantity >= 0:
-                # Increasing / opening long
                 new_qty = pos.quantity + qty
                 if new_qty > 0:
                     pos.avg_price = (pos.avg_price * pos.quantity + price * qty) / new_qty
                 pos.quantity = new_qty
             else:
-                # Closing (part of) a short
                 closing = min(qty, -pos.quantity)
                 pos.realized_pnl += (pos.avg_price - price) * closing
-                pos.quantity += closing  # less negative
+                pos.quantity += closing
 
                 remaining = qty - closing
                 if remaining > 0:
-                    # Short fully closed, now open new long with remaining
                     new_qty = remaining
                     pos.avg_price = price
                     pos.quantity = new_qty
 
         elif side == "sell":
             if pos.quantity <= 0:
-                # Increasing / opening short
                 new_qty = pos.quantity - qty
                 abs_old = -pos.quantity
                 abs_new = abs_old + qty
@@ -103,7 +130,6 @@ class ExecutionTracker:
                     pos.avg_price = (pos.avg_price * abs_old + price * qty) / abs_new
                 pos.quantity = new_qty
             else:
-                # Closing (part of) a long
                 closing = min(qty, pos.quantity)
                 pos.realized_pnl += (price - pos.avg_price) * closing
                 pos.quantity -= closing
@@ -113,7 +139,6 @@ class ExecutionTracker:
                     pos.avg_price = 0.0
 
                 if remaining > 0:
-                    # Long fully closed, now open new short
                     new_qty = -remaining
                     pos.avg_price = price
                     pos.quantity = new_qty

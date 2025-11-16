@@ -42,8 +42,14 @@ class Engine:
         logger.info("Engine loop starting (live=%s)", self.order_manager.live)
         try:
             while True:
-                # One portfolio snapshot per loop
+                # Snapshot + current holdings
                 snapshot = self.client.get_portfolio_snapshot()
+                positions = self.client.get_equity_positions()
+
+                # Seed execution tracker from holdings once
+                tracker = getattr(self.order_manager, "execution_tracker", None)
+                if tracker is not None:
+                    tracker.seed_from_positions(positions)
 
                 for sym in self.symbols:
                     quote = self.client.get_quote(sym)
@@ -52,10 +58,9 @@ class Engine:
                     for strat in self.strategies:
                         intents = strat.on_quote(quote)
                         for oi in intents:
-                            self.order_manager.process_order(oi, quote, snapshot)
+                            self.order_manager.process_order(oi, quote, snapshot, positions)
 
                 # Engine-level PnL summary
-                tracker = getattr(self.order_manager, "execution_tracker", None)
                 if tracker is not None:
                     tracker.log_summary()
 

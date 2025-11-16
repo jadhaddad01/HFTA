@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 import getpass
 
@@ -31,6 +31,14 @@ class PortfolioSnapshot:
     currency: str
     net_worth: float
     cash_available: float
+
+
+@dataclass
+class Holding:
+    symbol: str
+    quantity: float
+    avg_price: Optional[float]
+    security_id: Optional[str] = None
 
 
 def _to_float(val: Any) -> Optional[float]:
@@ -218,7 +226,7 @@ class WealthsimpleClient:
         )
 
     # ------------------------------------------------------------------ #
-    # Portfolio snapshot
+    # Portfolio snapshot + holdings
     # ------------------------------------------------------------------ #
 
     def get_portfolio_snapshot(self) -> PortfolioSnapshot:
@@ -243,6 +251,56 @@ class WealthsimpleClient:
             net_worth=net_worth or 0.0,
             cash_available=cash_available or 0.0,
         )
+
+    def get_equity_positions(self) -> Dict[str, Holding]:
+        """
+        Return current equity holdings for this account as a mapping:
+            { 'AAPL': Holding(...), ... }
+
+        This is deliberately defensive on field names. If parsing fails,
+        it returns an empty dict (which causes risk logic to block sells).
+        """
+        try:
+            positions: List[Dict[str, Any]] = self.ws.get_positions(
+                account_ids=[self._account_id],
+                security_type="EQUITY",
+                include_security=True,
+                aggregated=False,
+            )
+        except Exception as e:
+            logger.warning("get_equity_positions failed: %s", e)
+            return {}
+
+        result: Dict[str, Holding] = {}
+        for p in positions:
+            security = p.get("security") or {}
+            symbol = (security.get("symbol") or p.get("symbol") or "").upper()
+            if not symbol:
+                continue
+
+            qty = _to_float(
+                p.get("quantity")
+                or p.get("netQuantity")
+                or p.get("units")
+            )
+            if qty is None:
+                qty = 0.0
+
+            avg_price = _to_float(
+                p.get("averagePrice")
+                or p.get("bookPrice")
+                or p.get("book_value")
+            )
+
+            sec_id = security.get("id")
+            result[symbol] = Holding(
+                symbol=symbol,
+                quantity=qty,
+                avg_price=avg_price,
+                security_id=sec_id,
+            )
+
+        return result
 
     # ------------------------------------------------------------------ #
     # Equity orders (basic)

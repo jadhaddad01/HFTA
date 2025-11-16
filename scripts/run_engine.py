@@ -34,6 +34,7 @@ def main() -> None:
     risk_cfg = RiskConfig(
         max_notional_per_order=50.0,
         max_cash_utilization=0.10,
+        allow_short_selling=False,
     )
     risk_manager = RiskManager(risk_cfg)
 
