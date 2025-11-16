@@ -2,21 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from HFTA.broker.client import Quote
 from HFTA.strategies.base import OrderIntent, Strategy
-
-
-@dataclass
-class MicroTrendScalperConfig:
-    symbol: str
-    order_quantity: float = 1.0
-    short_window: int = 5
-    long_window: int = 20
-    trend_threshold: float = 0.0005  # 5 bps of divergence between short & long MA
-    max_position: float = 5.0        # cap intended directional size
 
 
 class MicroTrendScalper(Strategy):
@@ -34,32 +23,29 @@ class MicroTrendScalper(Strategy):
     """
 
     def __init__(self, name: str, config: Dict[str, Any]) -> None:
-        super().__init__(name)
+        # Base Strategy needs both name and config
+        super().__init__(name, config)
 
-        cfg = MicroTrendScalperConfig(
-            symbol=config["symbol"],
-            order_quantity=float(config.get("order_quantity", 1.0)),
-            short_window=int(config.get("short_window", 5)),
-            long_window=int(config.get("long_window", 20)),
-            trend_threshold=float(config.get("trend_threshold", 0.0005)),
-            max_position=float(config.get("max_position", 5.0)),
-        )
+        self.symbol = config["symbol"].upper()
+        self.order_quantity: float = float(config.get("order_quantity", 1.0))
+        self.short_window: int = int(config.get("short_window", 5))
+        self.long_window: int = int(config.get("long_window", 20))
+        self.trend_threshold: float = float(config.get("trend_threshold", 0.0005))
+        self.max_position: float = float(config.get("max_position", 5.0))
 
-        if cfg.short_window <= 0 or cfg.long_window <= 0:
+        if self.short_window <= 0 or self.long_window <= 0:
             raise ValueError("short_window and long_window must be > 0")
-        if cfg.short_window >= cfg.long_window:
+        if self.short_window >= self.long_window:
             raise ValueError("short_window must be < long_window")
 
-        self.cfg = cfg
-        self.symbol = cfg.symbol.upper()
         self._price_buffer: List[float] = []
-        self._last_signal: str | None = None  # "up", "down", or None
+        self._last_signal: Optional[str] = None  # "up", "down", or None
 
     # ------------------------------------------------------------------ #
     # Helpers
     # ------------------------------------------------------------------ #
 
-    def _mid_price(self, q: Quote) -> float | None:
+    def _mid_price(self, q: Quote) -> Optional[float]:
         vals = [v for v in (q.bid, q.ask) if v is not None]
         if not vals:
             return None
@@ -79,24 +65,24 @@ class MicroTrendScalper(Strategy):
             return []
 
         self._price_buffer.append(mid)
-        if len(self._price_buffer) > self.cfg.long_window:
-            self._price_buffer = self._price_buffer[-self.cfg.long_window :]
+        if len(self._price_buffer) > self.long_window:
+            self._price_buffer = self._price_buffer[-self.long_window :]
 
         # Wait until we have enough history
-        if len(self._price_buffer) < self.cfg.long_window:
+        if len(self._price_buffer) < self.long_window:
             return []
 
-        short = sum(self._price_buffer[-self.cfg.short_window :]) / self.cfg.short_window
+        short = sum(self._price_buffer[-self.short_window :]) / self.short_window
         long = sum(self._price_buffer) / len(self._price_buffer)
         if long == 0:
             return []
 
         rel = (short - long) / long
 
-        signal: str | None
-        if rel > self.cfg.trend_threshold:
+        signal: Optional[str]
+        if rel > self.trend_threshold:
             signal = "up"
-        elif rel < -self.cfg.trend_threshold:
+        elif rel < -self.trend_threshold:
             signal = "down"
         else:
             signal = None
@@ -116,7 +102,7 @@ class MicroTrendScalper(Strategy):
                 OrderIntent(
                     symbol=self.symbol,
                     side="buy",
-                    quantity=min(self.cfg.order_quantity, self.cfg.max_position),
+                    quantity=min(self.order_quantity, self.max_position),
                     order_type="limit",
                     limit_price=mid,
                     meta={"strategy": self.name, "signal": "trend_up"},
@@ -128,7 +114,7 @@ class MicroTrendScalper(Strategy):
                 OrderIntent(
                     symbol=self.symbol,
                     side="sell",
-                    quantity=self.cfg.order_quantity,
+                    quantity=self.order_quantity,
                     order_type="limit",
                     limit_price=mid,
                     meta={"strategy": self.name, "signal": "trend_down"},
