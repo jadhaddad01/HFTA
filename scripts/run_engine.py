@@ -17,33 +17,29 @@ logging.basicConfig(
 
 
 def main() -> None:
+    # This will use the account whose name == 'HFTA' by default, or error out.
     client = WealthsimpleClient()
 
-    # Strategy config (still very small size)
     mm = MicroMarketMaker(
         name="mm_AAPL",
         config={
             "symbol": "AAPL",
             "max_inventory": 2,
-            "spread": 0.05,         # 5 cents around mid
+            "spread": 0.05,
             "order_quantity": 1,
         },
     )
 
-    # Risk config for this test:
-    # - Max $50 per order
-    # - At most 10% of available cash per BUY
     risk_cfg = RiskConfig(
         max_notional_per_order=50.0,
         max_cash_utilization=0.10,
     )
     risk_manager = RiskManager(risk_cfg)
 
-    # Order manager, still dry-run (live=False)
     order_manager = OrderManager(
         client=client,
         risk_manager=risk_manager,
-        live=False,               # flip to True only when you're ready
+        live=False,  # still DRY-RUN
     )
 
     engine = Engine(
@@ -54,7 +50,7 @@ def main() -> None:
         poll_interval=5.0,
     )
 
-    print("Starting HFTA engine in DRY-RUN mode (with basic risk). Ctrl+C to stop.")
+    print("Starting HFTA engine in DRY-RUN mode on account name='HFTA'. Ctrl+C to stop.")
     engine.run_forever()
 
 

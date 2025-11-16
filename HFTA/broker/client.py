@@ -57,11 +57,13 @@ class WealthsimpleClient:
     """
     Thin wrapper around WealthsimpleV2 for the HFTA engine.
 
-    Responsibilities:
-    - Ensure we are logged in (reusing keyring/env tokens if available,
-      otherwise prompting once for credentials and calling authenticate()).
-    - Provide quotes, portfolio snapshot, and basic equity orders.
+    Behaviour:
+    - If account_id is provided: use that exact account (or error if not found).
+    - If account_id is omitted: automatically use the account whose
+      name == 'HFTA'. If no such account exists, raise an error.
     """
+
+    TARGET_ACCOUNT_NAME = "HFTA"
 
     def __init__(
         self,
@@ -77,8 +79,8 @@ class WealthsimpleClient:
         # Make sure we actually have an access token; if not, prompt user
         self._ensure_login()
 
-        # After login we can safely fetch accounts
-        self._account_id = account_id or self._auto_pick_default_account()
+        # After login we can safely fetch accounts and pick one
+        self._account_id = self._select_account(account_id)
         logger.info("WealthsimpleClient initialized for account %s", self._account_id)
 
     # ------------------------------------------------------------------ #
@@ -87,11 +89,7 @@ class WealthsimpleClient:
 
     def _ensure_login(self) -> None:
         """
-        If the WealthsimpleV2 client has no access_token, do an interactive login:
-
-        1. Check if self.ws.access_token is already set (from keyring/env).
-        2. If not, prompt for username/password/otp and call authenticate().
-        3. Save tokens to keyring using _save_tokens_to_keyring() if available.
+        If the WealthsimpleV2 client has no access_token, do an interactive login.
         """
         if getattr(self.ws, "access_token", None):
             logger.info("Wealthsimple session already authenticated.")
@@ -103,10 +101,8 @@ class WealthsimpleClient:
         password = getpass.getpass("Wealthsimple password: ").strip()
         otp = input("OTP (press Enter if not required): ").strip() or None
 
-        # Authenticate via wealthsimple_v2.authenticate(...)
         self.ws.authenticate(username, password, otp)
 
-        # Persist tokens to keyring if method is available
         save_fn = getattr(self.ws, "_save_tokens_to_keyring", None)
         if callable(save_fn):
             try:
@@ -120,18 +116,47 @@ class WealthsimpleClient:
     # Account helpers
     # ------------------------------------------------------------------ #
 
-    def _auto_pick_default_account(self) -> str:
+    def _select_account(self, account_id: Optional[str]) -> str:
+        """
+        Choose which account to use.
+
+        Priority:
+        1) Explicit account_id if provided and exists.
+        2) Account whose name == 'HFTA' (exact match, case-sensitive).
+           If not found, raise a RuntimeError.
+        """
         accounts = self.ws.get_accounts()
         if not accounts:
             raise RuntimeError("No accounts returned from Wealthsimple API.")
 
-        # Pick the first OPEN account if possible
+        # 1) Explicit account_id
+        if account_id is not None:
+            for acc in accounts:
+                if acc.get("id") == account_id:
+                    logger.info("Using explicit account_id=%s", account_id)
+                    return account_id
+            raise ValueError(f"account_id={account_id!r} not found in Wealthsimple accounts.")
+
+        # 2) Default: account with name == 'HFTA'
         for acc in accounts:
-            if acc.get("status") == "OPEN":
+            name = acc.get("name") or acc.get("nickname") or acc.get("accountNickname")
+            if isinstance(name, str) and name == self.TARGET_ACCOUNT_NAME:
+                logger.info(
+                    "Using default account with name='%s': id=%s",
+                    self.TARGET_ACCOUNT_NAME,
+                    acc.get("id"),
+                )
                 return acc["id"]
 
-        # Fallback: first account
-        return accounts[0]["id"]
+        # If we get here, the HFTA account doesn't exist: hard error
+        details = [
+            (a.get("id"), a.get("name") or a.get("nickname") or a.get("accountNickname"))
+            for a in accounts
+        ]
+        raise RuntimeError(
+            f"No Wealthsimple account found with name='{self.TARGET_ACCOUNT_NAME}'. "
+            f"Available accounts (id, name): {details}"
+        )
 
     @property
     def account_id(self) -> str:
@@ -241,12 +266,13 @@ class WealthsimpleClient:
             raise ValueError("side must be 'buy' or 'sell'")
 
         logger.info(
-            "Placing %s %s: %s x %s @ %s",
+            "Placing %s %s: %s x %s @ %s (account=%s)",
             side,
             order_type,
             quantity,
             symbol,
             limit_price,
+            account_id,
         )
 
         if order_type == "market":
