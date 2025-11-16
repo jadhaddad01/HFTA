@@ -6,6 +6,7 @@ import logging
 
 from HFTA.broker.client import WealthsimpleClient
 from HFTA.core.engine import Engine
+from HFTA.core.execution_tracker import ExecutionTracker
 from HFTA.core.order_manager import OrderManager
 from HFTA.core.risk_manager import RiskConfig, RiskManager
 from HFTA.strategies.micro_market_maker import MicroMarketMaker
@@ -17,7 +18,7 @@ logging.basicConfig(
 
 
 def main() -> None:
-    # This will use the account whose name == 'HFTA' by default, or error out.
+    # Uses the HFTA account by default (name == 'HFTA')
     client = WealthsimpleClient()
 
     mm = MicroMarketMaker(
@@ -36,9 +37,12 @@ def main() -> None:
     )
     risk_manager = RiskManager(risk_cfg)
 
+    execution_tracker = ExecutionTracker()
+
     order_manager = OrderManager(
         client=client,
         risk_manager=risk_manager,
+        execution_tracker=execution_tracker,
         live=False,  # still DRY-RUN
     )
 

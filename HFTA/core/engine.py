@@ -8,7 +8,7 @@ from typing import List
 
 from HFTA.broker.client import WealthsimpleClient
 from HFTA.core.order_manager import OrderManager
-from HFTA.strategies.base import Strategy, OrderIntent
+from HFTA.strategies.base import Strategy
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,11 @@ class Engine:
                         intents = strat.on_quote(quote)
                         for oi in intents:
                             self.order_manager.process_order(oi, quote, snapshot)
+
+                # Engine-level PnL summary
+                tracker = getattr(self.order_manager, "execution_tracker", None)
+                if tracker is not None:
+                    tracker.log_summary()
 
                 time.sleep(self.poll_interval)
         except KeyboardInterrupt:
