@@ -46,8 +46,11 @@ def main() -> None:
         },
     )
 
+    # Risk configuration tuned for paper trading:
+    # - Higher per-order cap so the bot can trade
+    # - 10% of (paper) cash per order
     risk_cfg = RiskConfig(
-        max_notional_per_order=50.0,
+        max_notional_per_order=1000.0,  # was 50.0
         max_cash_utilization=0.10,
         allow_short_selling=False,
     )
@@ -59,7 +62,7 @@ def main() -> None:
         client=client,
         risk_manager=risk_manager,
         execution_tracker=execution_tracker,
-        live=False,  # still DRY-RUN
+        live=False,  # still DRY-RUN: no live orders
     )
 
     engine = Engine(
@@ -68,11 +71,12 @@ def main() -> None:
         symbols=["AAPL"],
         order_manager=order_manager,
         poll_interval=5.0,
+        paper_cash=100_000.0,  # your 100k starting capital in paper mode
     )
 
     print(
         "Starting HFTA engine in DRY-RUN mode on account name='HFTA' "
-        "with strategies: mm_AAPL + scalper_AAPL. Ctrl+C to stop."
+        "with strategies: mm_AAPL + scalper_AAPL, paper_cash=100000. Ctrl+C to stop."
     )
     engine.run_forever()
 
