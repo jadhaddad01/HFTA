@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import logging
+from pathlib import Path
+from typing import Any, Dict, List
 
 from HFTA.broker.client import WealthsimpleClient
 from HFTA.core.engine import Engine
@@ -17,66 +21,87 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
 )
 
+# Simple registry so configs can refer to strategies by string
+STRATEGY_REGISTRY = {
+    "micro_market_maker": MicroMarketMaker,
+    "micro_trend_scalper": MicroTrendScalper,
+}
+
+
+def load_config(path: Path) -> Dict[str, Any]:
+    if not path.is_file():
+        raise FileNotFoundError(f"Config file not found: {path}")
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def build_strategies(cfg: Dict[str, Any]) -> List[Any]:
+    strategies_cfg = cfg.get("strategies", [])
+    strategies: List[Any] = []
+
+    for s in strategies_cfg:
+        s_type = s["type"]
+        name = s["name"]
+        s_conf = s.get("config", {})
+
+        cls = STRATEGY_REGISTRY.get(s_type)
+        if cls is None:
+            raise ValueError(f"Unknown strategy type in config: {s_type!r}")
+
+        strategies.append(cls(name=name, config=s_conf))
+
+    return strategies
+
 
 def main() -> None:
-    # Uses the HFTA account by default (name == 'HFTA')
-    client = WealthsimpleClient()
-
-    # Strategy 1: micro market maker around the mid
-    mm = MicroMarketMaker(
-        name="mm_AAPL",
-        config={
-            "symbol": "AAPL",
-            "max_inventory": 2,
-            "spread": 0.05,
-            "order_quantity": 1,
-        },
+    parser = argparse.ArgumentParser(description="Run HFTA engine.")
+    parser.add_argument(
+        "--config",
+        "-c",
+        default="configs/paper_aapl.json",
+        help="Path to JSON config file (default: configs/paper_aapl.json)",
     )
+    args = parser.parse_args()
 
-    # Strategy 2: micro trend-following scalper
-    scalper = MicroTrendScalper(
-        name="scalper_AAPL",
-        config={
-            "symbol": "AAPL",
-            "order_quantity": 1,
-            "short_window": 5,
-            "long_window": 20,
-            "trend_threshold": 0.0005,  # ~5 bps divergence
-            "max_position": 5,
-        },
-    )
+    cfg_path = Path(args.config)
+    cfg = load_config(cfg_path)
 
-    # Risk configuration tuned for paper trading:
-    # - Higher per-order cap so the bot can trade
-    # - 10% of (paper) cash per order
+    paper_cash = float(cfg.get("paper_cash", 0.0)) or None
+    poll_interval = float(cfg.get("poll_interval", 5.0))
+    symbols = [s.upper() for s in cfg.get("symbols", ["AAPL"])]
+
+    risk_cfg_raw = cfg.get("risk", {})
     risk_cfg = RiskConfig(
-        max_notional_per_order=1000.0,  # was 50.0
-        max_cash_utilization=0.10,
-        allow_short_selling=False,
+        max_notional_per_order=float(risk_cfg_raw.get("max_notional_per_order", 1000.0)),
+        max_cash_utilization=float(risk_cfg_raw.get("max_cash_utilization", 0.10)),
+        allow_short_selling=bool(risk_cfg_raw.get("allow_short_selling", False)),
     )
     risk_manager = RiskManager(risk_cfg)
 
+    client = WealthsimpleClient()
     execution_tracker = ExecutionTracker()
 
     order_manager = OrderManager(
         client=client,
         risk_manager=risk_manager,
         execution_tracker=execution_tracker,
-        live=False,  # still DRY-RUN: no live orders
+        live=False,  # still DRY-RUN; live mode will come later
     )
+
+    strategies = build_strategies(cfg)
 
     engine = Engine(
         client=client,
-        strategies=[mm, scalper],
-        symbols=["AAPL"],
+        strategies=strategies,
+        symbols=symbols,
         order_manager=order_manager,
-        poll_interval=5.0,
-        paper_cash=100_000.0,  # your 100k starting capital in paper mode
+        poll_interval=poll_interval,
+        paper_cash=paper_cash,
     )
 
     print(
-        "Starting HFTA engine in DRY-RUN mode on account name='HFTA' "
-        "with strategies: mm_AAPL + scalper_AAPL, paper_cash=100000. Ctrl+C to stop."
+        f"Starting HFTA engine in DRY-RUN mode on account name='HFTA' "
+        f"using config: {cfg_path}"
     )
     engine.run_forever()
 
