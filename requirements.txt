@@ -1,0 +1,22 @@
+# Core HTTP client
+requests>=2.31.0
+
+# Data / numerical
+pandas>=2.2.0
+numpy>=1.26.0
+
+# Market data helper (Yahoo Finance)
+yfinance>=0.2.40
+
+# Plotting for equity curves and diagnostics
+matplotlib>=3.8.0
+
+# Logging extras (already pulled in via requests etc., but kept explicit)
+urllib3>=2.0.0
+
+# Optional: AI controller (HFTA.ai.controller)
+# Comment out if you don't use the AI controller.
+openai>=1.40.0
+
+# Testing
+pytest>=8.0.0
