@@ -75,9 +75,6 @@ def export_equity_csv(path: Path, result) -> None:
 
 
 def export_fills_csv(path: Path, engine: BacktestEngine) -> None:
-    # We use the engine's ExecutionTracker directly.
-    from HFTA.core.execution_tracker import Fill  # noqa: F401  (for type hints only)
-
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -119,13 +116,16 @@ def load_quotes_from_csv(path: str, symbol: str) -> List[Quote]:
     - bid/ask/last: numeric
     - bid_size/ask_size: optional numeric
 
-    Any missing numeric cell is interpreted as None.
+    Any missing numeric cell is interpreted as None. If bid/ask are
+    missing but we have a last price, we synthesise a tight spread
+    around last so spread-based strategies can run.
     """
     quotes: List[Quote] = []
     with open(path, "r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             ts = row.get("timestamp") or row.get("time") or row.get("datetime")
+
             bid = _maybe_float(row, "bid")
             ask = _maybe_float(row, "ask")
             last = (
@@ -135,6 +135,21 @@ def load_quotes_from_csv(path: str, symbol: str) -> List[Quote]:
             )
             bid_size = _maybe_float(row, "bid_size")
             ask_size = _maybe_float(row, "ask_size")
+
+            # If we have neither last nor a full bid/ask, skip this row.
+            if last is None and (bid is None or ask is None):
+                continue
+
+            # If last is missing but both bid and ask exist, infer last as mid.
+            if last is None and bid is not None and ask is not None:
+                last = (bid + ask) / 2.0
+
+            # If bid/ask are missing but we do have a last price,
+            # create a synthetic spread around last.
+            if last is not None and (bid is None or ask is None):
+                half_spread = 0.01  # 1 cent each side
+                bid = last - half_spread
+                ask = last + half_spread
 
             quotes.append(
                 Quote(
