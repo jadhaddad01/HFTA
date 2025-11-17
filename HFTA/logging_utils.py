@@ -16,14 +16,15 @@ def parse_log_level(level_str: str) -> int:
         return logging.DEBUG
 
     level_str = level_str.upper()
-    return {
+    mapping = {
         "CRITICAL": logging.CRITICAL,
         "ERROR": logging.ERROR,
         "WARNING": logging.WARNING,
         "INFO": logging.INFO,
         "DEBUG": logging.DEBUG,
         "NOTSET": logging.NOTSET,
-    }.get(level_str, logging.DEBUG)
+    }
+    return mapping.get(level_str, logging.DEBUG)
 
 
 def setup_logging(
@@ -33,26 +34,25 @@ def setup_logging(
     log_to_console: bool = False,
 ) -> logging.Logger:
     """
-    Configure and return a logger.
+    Configure *root* logging so that ALL HFTA modules share the same handlers.
 
-    - name: logger name, e.g. "HFTA.engine"
+    - name: logger name returned for convenience (e.g. "HFTA.engine")
     - log_file: path to log file (directories are created automatically)
     - level: logging level (DEBUG by default)
-    - log_to_console: if True, also log to stdout; if False, log only to file
+    - log_to_console: if True, logs also go to the terminal
     """
 
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-    logger.propagate = False  # avoid double logging via root
+    # Configure the root logger; all other loggers will propagate to it.
+    root = logging.getLogger()
+    root.setLevel(level)
 
-    # If logger already has handlers, just update their level and return it.
-    if logger.handlers:
-        for h in logger.handlers:
-            h.setLevel(level)
-        return logger
+    # Avoid duplicate logs if called multiple times
+    if root.handlers:
+        root.handlers.clear()
 
     fmt = logging.Formatter(
-        "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+        "%(asctime)s | %(levelname)-5s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
 
     # Optional console handler
@@ -60,7 +60,7 @@ def setup_logging(
         console_handler = logging.StreamHandler()
         console_handler.setLevel(level)
         console_handler.setFormatter(fmt)
-        logger.addHandler(console_handler)
+        root.addHandler(console_handler)
 
     # Optional file handler
     if log_file:
@@ -69,6 +69,8 @@ def setup_logging(
         file_handler = logging.FileHandler(log_path, encoding="utf-8")
         file_handler.setLevel(level)
         file_handler.setFormatter(fmt)
-        logger.addHandler(file_handler)
+        root.addHandler(file_handler)
 
+    # Return a named logger for the caller, but everything now uses root handlers
+    logger = logging.getLogger(name)
     return logger
