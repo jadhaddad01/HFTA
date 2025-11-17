@@ -93,90 +93,109 @@ def main() -> None:
 
     logger.debug("Parsed arguments: %s", vars(args))
 
-    cfg = load_config(args.config)
-    logger.info("Starting run engine with config=%s", args.config)
-    logger.debug("Loaded config from %s", args.config)
-
-    symbols = cfg.get("symbols", [])
-    poll_interval = float(cfg.get("poll_interval", 5.0))
-    paper_cash = float(cfg.get("paper_cash", 100000.0))
-
-    risk_config = build_risk_config(cfg)
-    logger.info("RiskConfig: %s", risk_config)
-
-    # Broker client (Wealthsimple)
-    client = WealthsimpleClient()
-    account_name = cfg.get("account_name", "HFTA")
-    client.ensure_authenticated()
-    client.select_account_by_name(account_name)
-    logger.info(
-        "WealthsimpleClient initialized for account name=%r", account_name
-    )
-
-    # Core components
-    execution_tracker = ExecutionTracker()
-    risk_manager = RiskManager(risk_config)
-    order_manager = OrderManager(
-        client=client,
-        risk_manager=risk_manager,
-        execution_tracker=execution_tracker,
-        live=False,  # DRY-RUN for now
-    )
-
-    # Strategies
-    strategies = build_strategies(cfg)
-    logger.info("Built %d strategies for symbols=%s", len(strategies), symbols)
-
-    # AI controller (optional)
-    ai_cfg = cfg.get("ai", {})
-    ai_enabled = bool(ai_cfg.get("enabled", False))
-    ai_model = ai_cfg.get("model", "gpt-5-mini")
-    ai_interval = int(ai_cfg.get("interval_loops", 12))
-    ai_temperature = float(ai_cfg.get("temperature", 0.2))
-    ai_max_tokens = int(ai_cfg.get("max_output_tokens", 512))
-
-    ai_controller = AIController(
-        model=ai_model,
-        interval_loops=ai_interval,
-        temperature=ai_temperature,
-        max_output_tokens=ai_max_tokens,
-        enabled=ai_enabled,
-    )
-
-    # Engine
-    engine = Engine(
-        client=client,
-        strategies=strategies,
-        order_manager=order_manager,
-        execution_tracker=execution_tracker,
-        ai_controller=ai_controller,
-        poll_interval=poll_interval,
-        paper_cash=paper_cash,
-        symbols=symbols,
-        logger=logger,
-    )
-
-    logger.info(
-        "Engine created (poll_interval=%.3fs, paper_cash=%.2f, symbols=%s)",
-        poll_interval,
-        paper_cash,
-        symbols,
-    )
-
-    print(
-        f"Starting HFTA engine in DRY-RUN mode on account name='{account_name}' "
-        f"using config: {args.config}"
-    )
-
-    # Run engine with exception logging so stack traces go to the log file.
     try:
-        engine.run_forever()
-    except KeyboardInterrupt:
-        print("\nStopped by user.")
-        logger.info("Engine stopped by user (KeyboardInterrupt).")
+        # ------------------------------------------------------------------
+        # Load config
+        # ------------------------------------------------------------------
+        cfg = load_config(args.config)
+        logger.info("Starting run engine with config=%s", args.config)
+        logger.debug("Loaded config from %s", args.config)
+
+        symbols = cfg.get("symbols", [])
+        poll_interval = float(cfg.get("poll_interval", 5.0))
+        paper_cash = float(cfg.get("paper_cash", 100000.0))
+        account_name = cfg.get("account_name", "HFTA")
+
+        risk_config = build_risk_config(cfg)
+        logger.info("RiskConfig: %s", risk_config)
+
+        # ------------------------------------------------------------------
+        # Broker client (Wealthsimple)
+        # ------------------------------------------------------------------
+        # WealthsimpleClient internally handles authentication and default
+        # account selection; we just instantiate it.
+        client = WealthsimpleClient()
+        logger.info(
+            "WealthsimpleClient created (will use its configured default account, "
+            "expected name=%r)", account_name
+        )
+
+        # ------------------------------------------------------------------
+        # Core components
+        # ------------------------------------------------------------------
+        execution_tracker = ExecutionTracker()
+        risk_manager = RiskManager(risk_config)
+        order_manager = OrderManager(
+            client=client,
+            risk_manager=risk_manager,
+            execution_tracker=execution_tracker,
+            live=False,  # DRY-RUN for now
+        )
+
+        # ------------------------------------------------------------------
+        # Strategies
+        # ------------------------------------------------------------------
+        strategies = build_strategies(cfg)
+        logger.info("Built %d strategies for symbols=%s", len(strategies), symbols)
+
+        # ------------------------------------------------------------------
+        # AI controller (optional)
+        # ------------------------------------------------------------------
+        ai_cfg = cfg.get("ai", {})
+        ai_enabled = bool(ai_cfg.get("enabled", False))
+        ai_model = ai_cfg.get("model", "gpt-5-mini")
+        ai_interval = int(ai_cfg.get("interval_loops", 12))
+        ai_temperature = float(ai_cfg.get("temperature", 0.2))
+        ai_max_tokens = int(ai_cfg.get("max_output_tokens", 512))
+
+        ai_controller = AIController(
+            model=ai_model,
+            interval_loops=ai_interval,
+            temperature=ai_temperature,
+            max_output_tokens=ai_max_tokens,
+            enabled=ai_enabled,
+        )
+
+        # ------------------------------------------------------------------
+        # Engine
+        # ------------------------------------------------------------------
+        engine = Engine(
+            client=client,
+            strategies=strategies,
+            order_manager=order_manager,
+            execution_tracker=execution_tracker,
+            ai_controller=ai_controller,
+            poll_interval=poll_interval,
+            paper_cash=paper_cash,
+            symbols=symbols,
+            logger=logger,
+        )
+
+        logger.info(
+            "Engine created (poll_interval=%.3fs, paper_cash=%.2f, symbols=%s)",
+            poll_interval,
+            paper_cash,
+            symbols,
+        )
+
+        print(
+            f"Starting HFTA engine in DRY-RUN mode on account name='{account_name}' "
+            f"using config: {args.config}"
+        )
+
+        # Run engine with exception logging so stack traces go to the log file.
+        try:
+            engine.run_forever()
+        except KeyboardInterrupt:
+            print("\nStopped by user.")
+            logger.info("Engine stopped by user (KeyboardInterrupt).")
+        except Exception:
+            logger.exception("Unhandled exception in engine.run_forever")
+            raise
+
     except Exception:
-        logger.exception("Unhandled exception in engine.run_forever")
-        # Re-raise so you still see the traceback in the console.
+        # Any setup/runtime error in main() will be logged here
+        logger.exception("Unhandled exception in run_engine.main")
         raise
 
 
