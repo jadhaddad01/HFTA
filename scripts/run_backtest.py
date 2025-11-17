@@ -10,6 +10,7 @@ from typing import List, Optional
 
 from HFTA.broker.client import Quote
 from HFTA.core.risk_manager import RiskConfig
+from HFTA.logging_utils import setup_logging
 from HFTA.sim.backtester import BacktestConfig, BacktestEngine
 from HFTA.strategies.base import Strategy
 from HFTA.strategies.micro_market_maker import MicroMarketMaker
@@ -54,14 +55,15 @@ def build_strategies(cfg: dict) -> List[Strategy]:
       ...
     ]
     """
-    out: List[Strategy] = []
-    for strat_cfg in cfg.get("strategies", []):
+    strategies_cfg = cfg.get("strategies", [])
+    strategies: List[Strategy] = []
+    for strat_cfg in strategies_cfg:
         type_key = strat_cfg["type"]
         name = strat_cfg["name"]
         strat_cls = STRATEGY_REGISTRY[type_key]
         strat_config = strat_cfg.get("config", {})
-        out.append(strat_cls(name=name, config=strat_config))
-    return out
+        strategies.append(strat_cls(name=name, config=strat_config))
+    return strategies
 
 
 def export_equity_csv(path: Path, result) -> None:
@@ -111,10 +113,6 @@ def load_quotes_from_csv(path: str, symbol: str) -> List[Quote]:
     Expected columns (header names):
 
         timestamp,bid,ask,last[,bid_size,ask_size]
-
-    - timestamp: ISO8601 string (e.g. 2024-01-02T09:30:00)
-    - bid/ask/last: numeric
-    - bid_size/ask_size: optional numeric
 
     Any missing numeric cell is interpreted as None. If bid/ask are
     missing but we have a last price, we synthesise a tight spread
@@ -211,12 +209,23 @@ def main() -> None:
         default=None,
         help="Optional path to write fill blotter CSV.",
     )
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        default="logs/backtest.log",
+        help="Path to log file (default: logs/backtest.log).",
+    )
 
     args = parser.parse_args()
 
+    logger = setup_logging("HFTA.backtest", args.log_file)
+
     cfg_json = load_json(args.config)
+    logger.info("Loaded config from %s", args.config)
+
     risk_cfg = build_risk_config(cfg_json)
     strategies = build_strategies(cfg_json)
+    logger.info("Built %d strategy instance(s)", len(strategies))
 
     symbols = cfg_json.get("symbols") or ["AAPL"]
     symbol = symbols[0].upper()
@@ -240,13 +249,23 @@ def main() -> None:
 
     quotes: Optional[List[Quote]] = None
     if args.quotes_csv:
+        logger.info("Loading quotes from CSV: %s", args.quotes_csv)
         quotes = load_quotes_from_csv(args.quotes_csv, symbol=symbol)
+        logger.info("Loaded %d quotes from CSV", len(quotes))
+    else:
+        logger.info("No quotes CSV provided; using synthetic random walk.")
 
     engine = BacktestEngine(strategies=strategies, config=bt_cfg, quotes=quotes)
+    logger.info("Starting backtest...")
     result = engine.run()
+    logger.info(
+        "Backtest done. Realized PnL=%.2f, trades=%d",
+        result.realized_pnl,
+        result.num_trades,
+    )
 
     # ------------------------------------------------------------------ #
-    # Summary
+    # Console summary
     # ------------------------------------------------------------------ #
 
     print("=== BACKTEST SUMMARY ===")
@@ -283,10 +302,12 @@ def main() -> None:
 
     if args.equity_csv:
         export_equity_csv(Path(args.equity_csv), result)
+        logger.info("Equity curve written to %s", args.equity_csv)
         print(f"\nEquity curve written to {args.equity_csv}")
 
     if args.fills_csv:
         export_fills_csv(Path(args.fills_csv), engine)
+        logger.info("Fills blotter written to %s", args.fills_csv)
         print(f"Fills blotter written to {args.fills_csv}")
 
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -14,14 +13,11 @@ from HFTA.core.engine import Engine
 from HFTA.core.execution_tracker import ExecutionTracker
 from HFTA.core.order_manager import OrderManager
 from HFTA.core.risk_manager import RiskConfig, RiskManager
+from HFTA.logging_utils import setup_logging
 from HFTA.strategies.micro_market_maker import MicroMarketMaker
 from HFTA.strategies.micro_trend_scalper import MicroTrendScalper
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
-)
-
+# Strategy registry: map config "type" strings to concrete classes
 STRATEGY_REGISTRY = {
     "micro_market_maker": MicroMarketMaker,
     "micro_trend_scalper": MicroTrendScalper,
@@ -36,6 +32,16 @@ def load_config(path: Path) -> Dict[str, Any]:
 
 
 def build_strategies(cfg: Dict[str, Any]) -> List[Any]:
+    """
+    Build strategy instances from the config.
+
+    Expected shape:
+
+        "strategies": [
+          { "type": "micro_market_maker", "name": "mm_AAPL", "config": { ... } },
+          { "type": "micro_trend_scalper", "name": "trend_AAPL", "config": { ... } }
+        ]
+    """
     strategies_cfg = cfg.get("strategies", [])
     strategies: List[Any] = []
 
@@ -54,6 +60,9 @@ def build_strategies(cfg: Dict[str, Any]) -> List[Any]:
 
 
 def build_ai_controller(cfg: Dict[str, Any]) -> AIController | None:
+    """
+    Optional AI controller; only created if cfg["ai"]["enabled"] is true.
+    """
     ai_cfg = cfg.get("ai") or {}
     enabled = bool(ai_cfg.get("enabled", False))
     if not enabled:
@@ -69,17 +78,31 @@ def build_ai_controller(cfg: Dict[str, Any]) -> AIController | None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run HFTA engine.")
+    parser = argparse.ArgumentParser(
+        description="Run the HFTA engine in DRY-RUN mode."
+    )
     parser.add_argument(
         "--config",
-        "-c",
         default="configs/paper_aapl.json",
         help="Path to JSON config file (default: configs/paper_aapl.json)",
     )
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        default="logs/engine.log",
+        help="Path to log file (default: logs/engine.log).",
+    )
+
     args = parser.parse_args()
+
+    # Set up logging (console + file). All modules using logging.getLogger(...)
+    # will now write into this logger hierarchy.
+    logger = setup_logging("HFTA.engine", args.log_file)
+    logger.info("Starting run_engine with config=%s", args.config)
 
     cfg_path = Path(args.config)
     cfg = load_config(cfg_path)
+    logger.info("Loaded config from %s", cfg_path)
 
     paper_cash = float(cfg.get("paper_cash", 0.0)) or None
     poll_interval = float(cfg.get("poll_interval", 5.0))
@@ -87,11 +110,18 @@ def main() -> None:
 
     risk_cfg_raw = cfg.get("risk", {})
     risk_cfg = RiskConfig(
-        max_notional_per_order=float(risk_cfg_raw.get("max_notional_per_order", 1000.0)),
-        max_cash_utilization=float(risk_cfg_raw.get("max_cash_utilization", 0.10)),
-        allow_short_selling=bool(risk_cfg_raw.get("allow_short_selling", False)),
+        max_notional_per_order=float(
+            risk_cfg_raw.get("max_notional_per_order", 1000.0)
+        ),
+        max_cash_utilization=float(
+            risk_cfg_raw.get("max_cash_utilization", 0.10)
+        ),
+        allow_short_selling=bool(
+            risk_cfg_raw.get("allow_short_selling", False)
+        ),
     )
     risk_manager = RiskManager(risk_cfg)
+    logger.info("RiskConfig: %s", risk_cfg)
 
     client = WealthsimpleClient()
     execution_tracker = ExecutionTracker()
@@ -106,6 +136,14 @@ def main() -> None:
     strategies = build_strategies(cfg)
     ai_controller = build_ai_controller(cfg)
 
+    logger.info(
+        "Built %d strategies for symbols=%s", len(strategies), symbols
+    )
+    if ai_controller is not None:
+        logger.info("AIController enabled: model=%s", ai_controller.model)
+    else:
+        logger.info("AIController disabled.")
+
     engine = Engine(
         client=client,
         strategies=strategies,
@@ -116,10 +154,20 @@ def main() -> None:
         ai_controller=ai_controller,
     )
 
+    logger.info(
+        "Engine created (poll_interval=%.2fs, paper_cash=%s)",
+        poll_interval,
+        "None" if paper_cash is None else f"{paper_cash:.2f}",
+    )
+
     print(
         f"Starting HFTA engine in DRY-RUN mode on account name='HFTA' "
         f"using config: {cfg_path}"
     )
+    logger.info(
+        "Starting engine loop in DRY-RUN mode on account name='HFTA'."
+    )
+
     engine.run_forever()
 
 
@@ -128,5 +176,3 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("\nStopped by user.")
-
-# Testing new Org
