@@ -62,6 +62,15 @@ def build_risk_config(cfg: Dict[str, Any]) -> RiskConfig:
 
 
 def build_strategies(cfg: Dict[str, Any]) -> List[Any]:
+    """
+    Build strategy instances from config.
+
+    Primary path (matches original repo):
+        StrategyClass(name=<name>, config=<dict>)
+
+    Fallback (for any future strategy classes that take explicit kwargs):
+        StrategyClass(name=<name>, **config_dict)
+    """
     strategies_cfg = cfg.get("strategies", [])
     strategies: List[Any] = []
 
@@ -74,7 +83,13 @@ def build_strategies(cfg: Dict[str, Any]) -> List[Any]:
         if cls is None:
             raise ValueError(f"Unknown strategy type: {s_type}")
 
-        strat = cls(name=s_name, **s_conf)
+        try:
+            # Original style used throughout the project
+            strat = cls(name=s_name, config=s_conf)
+        except TypeError:
+            # Fallback if a strategy class later switches to explicit kwargs
+            strat = cls(name=s_name, **s_conf)
+
         strategies.append(strat)
 
     return strategies
@@ -117,7 +132,8 @@ def main() -> None:
         client = WealthsimpleClient()
         logger.info(
             "WealthsimpleClient created (will use its configured default account, "
-            "expected name=%r)", account_name
+            "expected name=%r)",
+            account_name,
         )
 
         # ------------------------------------------------------------------
@@ -194,7 +210,7 @@ def main() -> None:
             raise
 
     except Exception:
-        # Any setup/runtime error in main() will be logged here
+        # Any setup/runtime error in main() will be logged here as ERROR/CRITICAL.
         logger.exception("Unhandled exception in run_engine.main")
         raise
 
