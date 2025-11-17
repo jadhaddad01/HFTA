@@ -10,7 +10,8 @@ from typing import Optional
 def parse_log_level(level_str: str) -> int:
     """
     Convert a string like 'DEBUG', 'INFO', 'warning' into a logging level.
-    Defaults to DEBUG if unknown.
+
+    If the value is unknown or empty, defaults to DEBUG.
     """
     if not level_str:
         return logging.DEBUG
@@ -31,22 +32,22 @@ def setup_logging(
     name: str,
     log_file: Optional[str] = None,
     level: int = logging.DEBUG,
-    log_to_console: bool = False,
+    log_to_console: bool = True,
 ) -> logging.Logger:
     """
-    Configure *root* logging so that ALL HFTA modules share the same handlers.
+    Configure root logging so that all HFTA modules share the same handlers.
 
-    - name: logger name returned for convenience (e.g. "HFTA.engine")
-    - log_file: path to log file (directories are created automatically)
+    - name: the logger name returned to the caller (e.g. "HFTA.engine")
+    - log_file: path to a log file (directories are created automatically)
     - level: logging level (DEBUG by default)
-    - log_to_console: if True, logs also go to the terminal
+    - log_to_console: if True, also log to stderr (console)
     """
 
-    # Configure the root logger; all other loggers will propagate to it.
+    # Root logger — single place where handlers are attached.
     root = logging.getLogger()
     root.setLevel(level)
 
-    # Avoid duplicate logs if called multiple times
+    # Avoid duplicate logs if setup_logging is called multiple times.
     if root.handlers:
         root.handlers.clear()
 
@@ -55,22 +56,30 @@ def setup_logging(
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Optional console handler
+    # Console handler (optional)
     if log_to_console:
         console_handler = logging.StreamHandler()
         console_handler.setLevel(level)
         console_handler.setFormatter(fmt)
         root.addHandler(console_handler)
 
-    # Optional file handler
+    # File handler (optional)
     if log_file:
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
+
         file_handler = logging.FileHandler(log_path, encoding="utf-8")
         file_handler.setLevel(level)
         file_handler.setFormatter(fmt)
         root.addHandler(file_handler)
 
-    # Return a named logger for the caller, but everything now uses root handlers
+    # Quiet noisy third-party loggers, but still allow warnings/errors through
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("requests").setLevel(logging.WARNING)
+    logging.getLogger("keyring").setLevel(logging.INFO)
+    logging.getLogger("yfinance").setLevel(logging.INFO)
+    logging.getLogger("matplotlib").setLevel(logging.WARNING)
+
+    # Return a named logger for the caller’s convenience
     logger = logging.getLogger(name)
     return logger
