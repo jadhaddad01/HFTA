@@ -13,9 +13,10 @@ from HFTA.core.engine import Engine
 from HFTA.core.execution_tracker import ExecutionTracker
 from HFTA.core.order_manager import OrderManager
 from HFTA.core.risk_manager import RiskConfig, RiskManager
-from HFTA.logging_utils import setup_logging
+from HFTA.logging_utils import setup_logging, parse_log_level
 from HFTA.strategies.micro_market_maker import MicroMarketMaker
 from HFTA.strategies.micro_trend_scalper import MicroTrendScalper
+
 
 # Strategy registry: map config "type" strings to concrete classes
 STRATEGY_REGISTRY = {
@@ -31,7 +32,7 @@ def load_config(path: Path) -> Dict[str, Any]:
         return json.load(f)
 
 
-def build_strategies(cfg: Dict[str, Any]) -> List[Any]:
+def build_strategies(cfg: Dict[str, Any], logger) -> List[Any]:
     """
     Build strategy instances from the config.
 
@@ -54,27 +55,41 @@ def build_strategies(cfg: Dict[str, Any]) -> List[Any]:
         if cls is None:
             raise ValueError(f"Unknown strategy type in config: {s_type!r}")
 
+        logger.debug(
+            "Building strategy '%s' of type '%s' with config=%s",
+            name,
+            s_type,
+            s_conf,
+        )
         strategies.append(cls(name=name, config=s_conf))
 
     return strategies
 
 
-def build_ai_controller(cfg: Dict[str, Any]) -> AIController | None:
+def build_ai_controller(cfg: Dict[str, Any], logger) -> AIController | None:
     """
-    Optional AI controller; only created if cfg["ai"]["enabled"] is true.
+    Optional AI controller; only created if cfg['ai']['enabled'] is true.
     """
     ai_cfg = cfg.get("ai") or {}
     enabled = bool(ai_cfg.get("enabled", False))
     if not enabled:
+        logger.debug("AIController disabled via config.")
         return None
 
-    return AIController(
+    controller = AIController(
         model=ai_cfg.get("model", "gpt-4.1-mini"),
         interval_loops=int(ai_cfg.get("interval_loops", 12)),
         temperature=float(ai_cfg.get("temperature", 0.2)),
         max_output_tokens=int(ai_cfg.get("max_output_tokens", 512)),
         enabled=True,
     )
+    logger.debug(
+        "AIController created: model=%s, interval_loops=%d, temperature=%.3f",
+        controller.model,
+        controller.interval_loops,
+        controller.temperature,
+    )
+    return controller
 
 
 def main() -> None:
@@ -92,17 +107,24 @@ def main() -> None:
         default="logs/engine.log",
         help="Path to log file (default: logs/engine.log).",
     )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="DEBUG",
+        help="Logging level: DEBUG, INFO, WARNING, ERROR (default: DEBUG).",
+    )
 
     args = parser.parse_args()
 
-    # Set up logging (console + file). All modules using logging.getLogger(...)
-    # will now write into this logger hierarchy.
-    logger = setup_logging("HFTA.engine", args.log_file)
+    level = parse_log_level(args.log_level)
+    logger = setup_logging("HFTA.engine", args.log_file, level)
+    logger.debug("Parsed arguments: %s", vars(args))
     logger.info("Starting run_engine with config=%s", args.config)
 
     cfg_path = Path(args.config)
     cfg = load_config(cfg_path)
     logger.info("Loaded config from %s", cfg_path)
+    logger.debug("Config JSON: %s", cfg)
 
     paper_cash = float(cfg.get("paper_cash", 0.0)) or None
     poll_interval = float(cfg.get("poll_interval", 5.0))
@@ -125,7 +147,6 @@ def main() -> None:
 
     client = WealthsimpleClient()
     execution_tracker = ExecutionTracker()
-
     order_manager = OrderManager(
         client=client,
         risk_manager=risk_manager,
@@ -133,14 +154,19 @@ def main() -> None:
         live=False,  # still DRY-RUN; live mode comes later
     )
 
-    strategies = build_strategies(cfg)
-    ai_controller = build_ai_controller(cfg)
+    strategies = build_strategies(cfg, logger)
+    ai_controller = build_ai_controller(cfg, logger)
 
     logger.info(
         "Built %d strategies for symbols=%s", len(strategies), symbols
     )
+
     if ai_controller is not None:
-        logger.info("AIController enabled: model=%s", ai_controller.model)
+        logger.info(
+            "AIController enabled: model=%s, interval_loops=%d",
+            ai_controller.model,
+            ai_controller.interval_loops,
+        )
     else:
         logger.info("AIController disabled.")
 

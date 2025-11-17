@@ -5,12 +5,13 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 from pathlib import Path
 from typing import List, Optional
 
 from HFTA.broker.client import Quote
 from HFTA.core.risk_manager import RiskConfig
-from HFTA.logging_utils import setup_logging
+from HFTA.logging_utils import setup_logging, parse_log_level
 from HFTA.sim.backtester import BacktestConfig, BacktestEngine
 from HFTA.strategies.base import Strategy
 from HFTA.strategies.micro_market_maker import MicroMarketMaker
@@ -42,7 +43,7 @@ def build_risk_config(cfg: dict) -> RiskConfig:
     )
 
 
-def build_strategies(cfg: dict) -> List[Strategy]:
+def build_strategies(cfg: dict, logger) -> List[Strategy]:
     """
     Expected config shape:
 
@@ -62,11 +63,17 @@ def build_strategies(cfg: dict) -> List[Strategy]:
         name = strat_cfg["name"]
         strat_cls = STRATEGY_REGISTRY[type_key]
         strat_config = strat_cfg.get("config", {})
+        logger.debug(
+            "Building strategy '%s' of type '%s' with config=%s",
+            name,
+            type_key,
+            strat_config,
+        )
         strategies.append(strat_cls(name=name, config=strat_config))
     return strategies
 
 
-def export_equity_csv(path: Path, result) -> None:
+def export_equity_csv(path: Path, result, logger) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -74,14 +81,16 @@ def export_equity_csv(path: Path, result) -> None:
         for ts, eq in zip(result.timestamps, result.equity_curve):
             ts_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
             writer.writerow([ts_str, f"{eq:.4f}"])
+    logger.debug("Equity CSV wrote %d rows to %s", len(result.equity_curve), path)
 
 
-def export_fills_csv(path: Path, engine: BacktestEngine) -> None:
+def export_fills_csv(path: Path, engine: BacktestEngine, logger) -> None:
+    fills = list(engine.tracker.fills)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["symbol", "side", "quantity", "price", "timestamp"])
-        for fl in engine.tracker.fills:
+        for fl in fills:
             writer.writerow(
                 [
                     fl.symbol,
@@ -91,6 +100,7 @@ def export_fills_csv(path: Path, engine: BacktestEngine) -> None:
                     fl.timestamp or "",
                 ]
             )
+    logger.debug("Fills CSV wrote %d fills to %s", len(fills), path)
 
 
 def _maybe_float(row: dict, key: str) -> Optional[float]:
@@ -106,7 +116,7 @@ def _maybe_float(row: dict, key: str) -> Optional[float]:
         return None
 
 
-def load_quotes_from_csv(path: str, symbol: str) -> List[Quote]:
+def load_quotes_from_csv(path: str, symbol: str, logger) -> List[Quote]:
     """
     Load historical quotes from a CSV file.
 
@@ -161,6 +171,7 @@ def load_quotes_from_csv(path: str, symbol: str) -> List[Quote]:
                     timestamp=ts,
                 )
             )
+    logger.debug("Loaded %d quotes from %s", len(quotes), path)
     return quotes
 
 
@@ -215,16 +226,25 @@ def main() -> None:
         default="logs/backtest.log",
         help="Path to log file (default: logs/backtest.log).",
     )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="DEBUG",
+        help="Logging level: DEBUG, INFO, WARNING, ERROR (default: DEBUG).",
+    )
 
     args = parser.parse_args()
 
-    logger = setup_logging("HFTA.backtest", args.log_file)
+    level = parse_log_level(args.log_level)
+    logger = setup_logging("HFTA.backtest", args.log_file, level)
+    logger.debug("Parsed arguments: %s", vars(args))
 
     cfg_json = load_json(args.config)
     logger.info("Loaded config from %s", args.config)
+    logger.debug("Config JSON: %s", cfg_json)
 
     risk_cfg = build_risk_config(cfg_json)
-    strategies = build_strategies(cfg_json)
+    strategies = build_strategies(cfg_json, logger)
     logger.info("Built %d strategy instance(s)", len(strategies))
 
     symbols = cfg_json.get("symbols") or ["AAPL"]
@@ -246,12 +266,12 @@ def main() -> None:
         spread_cents=spread_cents,
         risk_config=risk_cfg,
     )
+    logger.debug("BacktestConfig: %s", bt_cfg)
 
     quotes: Optional[List[Quote]] = None
     if args.quotes_csv:
         logger.info("Loading quotes from CSV: %s", args.quotes_csv)
-        quotes = load_quotes_from_csv(args.quotes_csv, symbol=symbol)
-        logger.info("Loaded %d quotes from CSV", len(quotes))
+        quotes = load_quotes_from_csv(args.quotes_csv, symbol=symbol, logger=logger)
     else:
         logger.info("No quotes CSV provided; using synthetic random walk.")
 
@@ -301,12 +321,12 @@ def main() -> None:
     # ------------------------------------------------------------------ #
 
     if args.equity_csv:
-        export_equity_csv(Path(args.equity_csv), result)
+        export_equity_csv(Path(args.equity_csv), result, logger)
         logger.info("Equity curve written to %s", args.equity_csv)
         print(f"\nEquity curve written to {args.equity_csv}")
 
     if args.fills_csv:
-        export_fills_csv(Path(args.fills_csv), engine)
+        export_fills_csv(Path(args.fills_csv), engine, logger)
         logger.info("Fills blotter written to %s", args.fills_csv)
         print(f"Fills blotter written to {args.fills_csv}")
 
