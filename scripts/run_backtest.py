@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from pathlib import Path
 from typing import List
@@ -20,11 +21,13 @@ STRATEGY_REGISTRY = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
 def load_json(path: str) -> dict:
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(f"Config file not found: {p}")
-    with p.open("r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -39,69 +42,120 @@ def build_risk_config(cfg: dict) -> RiskConfig:
 
 def build_strategies(cfg: dict) -> List[Strategy]:
     """
-    Expected config shape example:
+    Expected config shape:
 
     "strategies": [
       {
-        "name": "mm_AAPL",
         "type": "micro_market_maker",
+        "name": "mm_AAPL",
         "config": { ... }
       },
-      {
-        "name": "ts_AAPL",
-        "type": "micro_trend_scalper",
-        "config": { ... }
-      }
+      ...
     ]
     """
     out: List[Strategy] = []
-    for s in cfg.get("strategies", []):
-        name = s["name"]
-        type_key = s["type"]
+    for strat_cfg in cfg.get("strategies", []):
+        type_key = strat_cfg["type"]
+        name = strat_cfg["name"]
         strat_cls = STRATEGY_REGISTRY[type_key]
-        strat_cfg = s.get("config", {})
-        out.append(strat_cls(name=name, config=strat_cfg))
+        strat_config = strat_cfg.get("config", {})
+        out.append(strat_cls(name=name, config=strat_config))
     return out
 
 
+def export_equity_csv(path: Path, result) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["timestamp", "equity"])
+        for ts, eq in zip(result.timestamps, result.equity_curve):
+            ts_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+            writer.writerow([ts_str, f"{eq:.4f}"])
+
+
+def export_fills_csv(path: Path, engine: BacktestEngine) -> None:
+    # We use the engine's ExecutionTracker directly.
+    from HFTA.core.execution_tracker import Fill  # noqa: F401  (for type hints only)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["symbol", "side", "quantity", "price", "timestamp"])
+        for fl in engine.tracker.fills:
+            writer.writerow(
+                [
+                    fl.symbol,
+                    fl.side,
+                    f"{fl.quantity:.4f}",
+                    f"{fl.price:.4f}",
+                    fl.timestamp or "",
+                ]
+            )
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run offline HFTA backtest.")
+    parser = argparse.ArgumentParser(description="Run HFTA strategies in offline backtest mode.")
     parser.add_argument(
         "--config",
         default="configs/paper_aapl.json",
-        help="Path to JSON config (default: configs/paper_aapl.json)",
+        help="Path to JSON config file (default: configs/paper_aapl.json)",
     )
     parser.add_argument(
         "--steps",
         type=int,
         default=2000,
-        help="Number of simulated timesteps (default: 2000)",
+        help="Number of synthetic quote steps to simulate (default: 2000).",
     )
+    parser.add_argument(
+        "--equity-csv",
+        type=str,
+        default=None,
+        help="Optional path to write equity curve CSV.",
+    )
+    parser.add_argument(
+        "--fills-csv",
+        type=str,
+        default=None,
+        help="Optional path to write fill blotter CSV.",
+    )
+
     args = parser.parse_args()
 
     cfg_json = load_json(args.config)
+    risk_cfg = build_risk_config(cfg_json)
+    strategies = build_strategies(cfg_json)
+
     symbols = cfg_json.get("symbols") or ["AAPL"]
     symbol = symbols[0].upper()
 
     paper_cash = float(cfg_json.get("paper_cash", 100_000.0))
     poll_interval = int(cfg_json.get("poll_interval", 5))
-
-    risk_cfg = build_risk_config(cfg_json)
-    strategies = build_strategies(cfg_json)
+    starting_price = float(cfg_json.get("starting_price", 40.0))
+    volatility_annual = float(cfg_json.get("volatility_annual", 0.4))
+    spread_cents = float(cfg_json.get("spread_cents", 0.10))
 
     bt_cfg = BacktestConfig(
         symbol=symbol,
-        starting_price=float(cfg_json.get("starting_price", 40.0)),
+        starting_price=starting_price,
         starting_cash=paper_cash,
         steps=args.steps,
         step_seconds=poll_interval,
-        volatility_annual=float(cfg_json.get("volatility_annual", 0.4)),
-        spread_cents=float(cfg_json.get("spread_cents", 0.10)),
+        volatility_annual=volatility_annual,
+        spread_cents=spread_cents,
         risk_config=risk_cfg,
     )
 
     engine = BacktestEngine(strategies=strategies, config=bt_cfg)
     result = engine.run()
+
+    # ------------------------------------------------------------------ #
+    # Summary
+    # ------------------------------------------------------------------ #
 
     print("=== BACKTEST SUMMARY ===")
     print(f"Symbol: {result.symbol}")
@@ -111,6 +165,18 @@ def main() -> None:
     print(f"Realized PnL: {result.realized_pnl:,.2f}")
     print(f"Max drawdown: {result.max_drawdown:.2%}")
     print(f"Steps simulated: {len(result.equity_curve)}")
+
+    print()
+    print("Trade stats:")
+    print(f"  Trades: {result.num_trades}")
+    print(f"  Wins:   {result.num_winning_trades}")
+    print(f"  Losses: {result.num_losing_trades}")
+    print(f"  Best trade PnL:  {result.best_trade_pnl:,.2f}")
+    print(f"  Worst trade PnL: {result.worst_trade_pnl:,.2f}")
+    print(f"  Avg trade PnL:   {result.avg_trade_pnl:,.2f}")
+    print(f"  Sharpe-like (per-step): {result.sharpe_like:.3f}")
+
+    print()
     print("Open positions at end:")
     for sym, pos in result.positions_summary.items():
         print(
@@ -118,6 +184,18 @@ def main() -> None:
             f"avg_price={pos.avg_price:.2f}, "
             f"realized_pnl={pos.realized_pnl:.2f}"
         )
+
+    # ------------------------------------------------------------------ #
+    # Optional CSV exports
+    # ------------------------------------------------------------------ #
+
+    if args.equity_csv:
+        export_equity_csv(Path(args.equity_csv), result)
+        print(f"\nEquity curve written to {args.equity_csv}")
+
+    if args.fills_csv:
+        export_fills_csv(Path(args.fills_csv), engine)
+        print(f"Fills blotter written to {args.fills_csv}")
 
 
 if __name__ == "__main__":

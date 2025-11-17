@@ -9,39 +9,15 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Dict
 
 from HFTA.broker.client import Quote, PortfolioSnapshot
-from HFTA.core.execution_tracker import ExecutionTracker, PositionState
+from HFTA.core.execution_tracker import ExecutionTracker, PositionState, Fill
 from HFTA.core.order_manager import OrderManager
 from HFTA.core.risk_manager import RiskConfig, RiskManager
 from HFTA.strategies.base import Strategy
 
 
-@dataclass
-class BacktestConfig:
-    """
-    Configuration for an offline backtest.
-    Controls the synthetic market and starting account state.
-    """
-    symbol: str = "AAPL"
-    starting_price: float = 40.0
-    starting_cash: float = 100_000.0
-    steps: int = 2_000
-    step_seconds: int = 5
-    volatility_annual: float = 0.4
-    spread_cents: float = 0.10
-    risk_config: Optional[RiskConfig] = None
-
-
-@dataclass
-class BacktestResult:
-    symbol: str
-    starting_cash: float
-    final_cash: float
-    final_equity: float
-    realized_pnl: float
-    max_drawdown: float
-    equity_curve: List[float]
-    timestamps: List[datetime]
-    positions_summary: Dict[str, PositionState]
+# ---------------------------------------------------------------------------
+# Synthetic quote generator
+# ---------------------------------------------------------------------------
 
 
 def generate_random_walk_quotes(
@@ -60,7 +36,8 @@ def generate_random_walk_quotes(
 
     - Start at `starting_price`
     - `steps` quotes, spaced `step_seconds` apart
-    - Fixed bid/ask spread of `spread_cents` around the mid
+    - No drift term (mu = 0), only volatility.
+    - Bid/ask built around mid with fixed spread.
     """
     if steps <= 0:
         return []
@@ -68,6 +45,7 @@ def generate_random_walk_quotes(
     if start_time is None:
         start_time = datetime.utcnow()
 
+    # Convert step size to years for GBM
     dt_years = step_seconds / (365.0 * 24.0 * 3600.0)
     sigma = float(volatility_annual)
 
@@ -107,16 +85,60 @@ def generate_random_walk_quotes(
     return quotes
 
 
+# ---------------------------------------------------------------------------
+# Backtest config / result
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class BacktestConfig:
+    """
+    Configuration for an offline backtest.
+    Controls the synthetic market and starting account state.
+    """
+
+    symbol: str = "AAPL"
+    starting_price: float = 40.0
+    starting_cash: float = 100_000.0
+    steps: int = 2_000
+    step_seconds: int = 5
+    volatility_annual: float = 0.4
+    spread_cents: float = 0.10
+    risk_config: Optional[RiskConfig] = None
+
+
+@dataclass
+class BacktestResult:
+    symbol: str
+    starting_cash: float
+    final_cash: float
+    final_equity: float
+    realized_pnl: float
+    max_drawdown: float
+    equity_curve: List[float]
+    timestamps: List[datetime]
+    positions_summary: Dict[str, PositionState]
+
+    # New metrics
+    num_trades: int = 0
+    num_winning_trades: int = 0
+    num_losing_trades: int = 0
+    best_trade_pnl: float = 0.0
+    worst_trade_pnl: float = 0.0
+    avg_trade_pnl: float = 0.0
+    sharpe_like: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Backtest engine
+# ---------------------------------------------------------------------------
+
+
 class BacktestEngine:
     """
-    Offline backtest engine.
-
-    - Generates or accepts a list of Quotes.
-    - Reuses RiskManager, OrderManager, ExecutionTracker like Engine.run_forever,
-      but with:
-        * client=None
-        * live=False (no Wealthsimple calls)
-    - Tracks cash, equity curve, max drawdown.
+    Offline engine that reuses the live OrderManager, RiskManager and
+    ExecutionTracker to simulate strategy behaviour on synthetic or
+    historical quotes.
     """
 
     def __init__(
@@ -144,7 +166,9 @@ class BacktestEngine:
         # ExecutionTracker tracks positions + realized PnL; we track cash.
         self.starting_cash = float(config.starting_cash)
 
-    # ---------------- helpers ---------------- #
+    # ------------------------------------------------------------------ #
+    # Helpers
+    # ------------------------------------------------------------------ #
 
     def _recompute_cash(self) -> float:
         """
@@ -180,7 +204,98 @@ class BacktestEngine:
             cash_available=cash,
         )
 
-    # ---------------- main entry ---------------- #
+    def _compute_trade_pnls(self) -> List[float]:
+        """
+        Derive per-trade realized PnL from the fill stream.
+
+        This is a simple position-based trade breakdown:
+        - We track a single net position per symbol.
+        - Any fill that reduces the absolute position generates realized PnL
+          for the closed quantity.
+        - Remaining quantity (if any) after a flip becomes the new position.
+        """
+        fills: List[Fill] = self.tracker.fills
+        if not fills:
+            return []
+
+        trade_pnls: List[float] = []
+
+        # Single-symbol assumption is fine for now; if you add more symbols
+        # later you can group by (symbol, account).
+        position = 0.0
+        avg_price = 0.0
+
+        for f in fills:
+            side = f.side.lower()
+            qty = float(f.quantity)
+            price = float(f.price)
+
+            if qty <= 0:
+                continue
+
+            direction = 1.0 if side == "buy" else -1.0
+
+            # If we are flat, this opens a new position.
+            if position == 0.0:
+                position = direction * qty
+                avg_price = price
+                continue
+
+            # Same direction as current position -> average in.
+            if (position > 0 and direction > 0) or (position < 0 and direction < 0):
+                total_qty = abs(position) + qty
+                if total_qty > 0:
+                    avg_price = (avg_price * abs(position) + price * qty) / total_qty
+                position += direction * qty
+                continue
+
+            # Opposite direction -> closing or flipping.
+            remaining_qty = qty
+            while remaining_qty > 0 and position != 0.0:
+                open_qty = abs(position)
+                closing_qty = min(open_qty, remaining_qty)
+
+                if position > 0 and direction < 0:
+                    # Closing part of a long
+                    pnl = closing_qty * (price - avg_price)
+                elif position < 0 and direction > 0:
+                    # Closing part of a short
+                    pnl = closing_qty * (avg_price - price)
+                else:
+                    pnl = 0.0
+
+                trade_pnls.append(pnl)
+
+                # Update open position
+                if closing_qty == open_qty:
+                    position = 0.0
+                    avg_price = 0.0
+                else:
+                    if position > 0:
+                        position = position - closing_qty
+                    else:
+                        position = position + closing_qty
+
+                remaining_qty -= closing_qty
+
+            # Any leftover quantity after closing becomes (or extends) a new position
+            if remaining_qty > 0:
+                if position == 0.0:
+                    position = direction * remaining_qty
+                    avg_price = price
+                else:
+                    total_qty = abs(position) + remaining_qty
+                    if total_qty > 0:
+                        avg_price = (
+                            avg_price * abs(position) + price * remaining_qty
+                        ) / total_qty
+                    position += direction * remaining_qty
+
+        return trade_pnls
+
+    # ------------------------------------------------------------------ #
+    # Public API
+    # ------------------------------------------------------------------ #
 
     def run(self) -> BacktestResult:
         cfg = self.config
@@ -245,9 +360,37 @@ class BacktestEngine:
                 if dd > max_drawdown:
                     max_drawdown = dd
 
+        # Aggregate account-level numbers
         realized_pnl = sum(pos.realized_pnl for pos in self.tracker.positions.values())
         final_cash = self._recompute_cash()
         final_equity = equity_curve[-1] if equity_curve else cfg.starting_cash
+
+        # Trade-level stats
+        trade_pnls = self._compute_trade_pnls()
+        num_trades = len(trade_pnls)
+        num_winning = sum(1 for p in trade_pnls if p > 0)
+        num_losing = sum(1 for p in trade_pnls if p < 0)
+        best_trade = max(trade_pnls) if trade_pnls else 0.0
+        worst_trade = min(trade_pnls) if trade_pnls else 0.0
+        avg_trade = sum(trade_pnls) / num_trades if num_trades > 0 else 0.0
+
+        # Simple Sharpe-like metric on per-step equity returns
+        sharpe_like = 0.0
+        if len(equity_curve) > 1:
+            returns: List[float] = []
+            for i in range(1, len(equity_curve)):
+                prev = equity_curve[i - 1]
+                curr = equity_curve[i]
+                if prev > 0:
+                    returns.append((curr / prev) - 1.0)
+
+            if len(returns) > 1:
+                mean_r = sum(returns) / len(returns)
+                var_r = sum((r - mean_r) ** 2 for r in returns) / (len(returns) - 1)
+                std_r = math.sqrt(var_r) if var_r > 0 else 0.0
+                if std_r > 0:
+                    # Not annualised; just scaled by sqrt(N) to be comparable across runs.
+                    sharpe_like = mean_r / std_r * math.sqrt(len(returns))
 
         return BacktestResult(
             symbol=cfg.symbol.upper(),
@@ -259,4 +402,11 @@ class BacktestEngine:
             equity_curve=equity_curve,
             timestamps=timestamps,
             positions_summary=self.tracker.positions.copy(),
+            num_trades=num_trades,
+            num_winning_trades=num_winning,
+            num_losing_trades=num_losing,
+            best_trade_pnl=best_trade,
+            worst_trade_pnl=worst_trade,
+            avg_trade_pnl=avg_trade,
+            sharpe_like=sharpe_like,
         )
