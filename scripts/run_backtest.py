@@ -6,8 +6,9 @@ import argparse
 import csv
 import json
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
+from HFTA.broker.client import Quote
 from HFTA.core.risk_manager import RiskConfig
 from HFTA.sim.backtester import BacktestConfig, BacktestEngine
 from HFTA.strategies.base import Strategy
@@ -93,13 +94,72 @@ def export_fills_csv(path: Path, engine: BacktestEngine) -> None:
             )
 
 
+def _maybe_float(row: dict, key: str) -> Optional[float]:
+    val = row.get(key)
+    if val is None:
+        return None
+    val = val.strip()
+    if not val:
+        return None
+    try:
+        return float(val)
+    except ValueError:
+        return None
+
+
+def load_quotes_from_csv(path: str, symbol: str) -> List[Quote]:
+    """
+    Load historical quotes from a CSV file.
+
+    Expected columns (header names):
+
+        timestamp,bid,ask,last[,bid_size,ask_size]
+
+    - timestamp: ISO8601 string (e.g. 2024-01-02T09:30:00)
+    - bid/ask/last: numeric
+    - bid_size/ask_size: optional numeric
+
+    Any missing numeric cell is interpreted as None.
+    """
+    quotes: List[Quote] = []
+    with open(path, "r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            ts = row.get("timestamp") or row.get("time") or row.get("datetime")
+            bid = _maybe_float(row, "bid")
+            ask = _maybe_float(row, "ask")
+            last = (
+                _maybe_float(row, "last")
+                or _maybe_float(row, "close")
+                or _maybe_float(row, "price")
+            )
+            bid_size = _maybe_float(row, "bid_size")
+            ask_size = _maybe_float(row, "ask_size")
+
+            quotes.append(
+                Quote(
+                    symbol=symbol.upper(),
+                    security_id=f"HIST-{symbol.upper()}",
+                    bid=bid,
+                    ask=ask,
+                    last=last,
+                    bid_size=bid_size,
+                    ask_size=ask_size,
+                    timestamp=ts,
+                )
+            )
+    return quotes
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run HFTA strategies in offline backtest mode.")
+    parser = argparse.ArgumentParser(
+        description="Run HFTA strategies in offline backtest mode."
+    )
     parser.add_argument(
         "--config",
         default="configs/paper_aapl.json",
@@ -109,7 +169,20 @@ def main() -> None:
         "--steps",
         type=int,
         default=2000,
-        help="Number of synthetic quote steps to simulate (default: 2000).",
+        help=(
+            "Number of synthetic quote steps to simulate (default: 2000). "
+            "Ignored if --quotes-csv is provided."
+        ),
+    )
+    parser.add_argument(
+        "--quotes-csv",
+        type=str,
+        default=None,
+        help=(
+            "Optional path to CSV of historical quotes "
+            "(timestamp,bid,ask,last[,bid_size,ask_size]). "
+            "If provided, these quotes are used instead of synthetic random walk."
+        ),
     )
     parser.add_argument(
         "--equity-csv",
@@ -150,7 +223,11 @@ def main() -> None:
         risk_config=risk_cfg,
     )
 
-    engine = BacktestEngine(strategies=strategies, config=bt_cfg)
+    quotes: Optional[List[Quote]] = None
+    if args.quotes_csv:
+        quotes = load_quotes_from_csv(args.quotes_csv, symbol=symbol)
+
+    engine = BacktestEngine(strategies=strategies, config=bt_cfg, quotes=quotes)
     result = engine.run()
 
     # ------------------------------------------------------------------ #
