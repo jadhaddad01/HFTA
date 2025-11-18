@@ -43,7 +43,6 @@
     "enabled": true,
     "model": "gpt-5-mini",
     "interval_loops": 12,
-    "temperature": 0.2,
-    "max_output_tokens": 512
+    "temperature": 0.2
   }
 }

@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 try:
     from openai import OpenAI  # type: ignore
-except Exception:
+except Exception:  # optional dependency
     OpenAI = None  # type: ignore
 
 logger = logging.getLogger(__name__)
@@ -18,19 +18,14 @@ class AIController:
     Periodically calls a GPT model to get small parameter tweaks and
     high-level commentary on how the system is doing.
 
-    Design goals:
-    - If the OpenAI SDK is missing or the API misbehaves, the engine must
-      keep running. All failures here are logged but not fatal.
-    - The model only receives a compact JSON snapshot of:
-        * realized PnL
-        * open positions
-        * a few risk limits
-        * a few strategy parameters
-    - The model may suggest:
+    - Engine must keep running even if the API fails (no hard crashes).
+    - Sends a compact JSON snapshot (PnL, positions, risk config, strategy params).
+    - Model may return:
         * strategy_updates: list of {name, params}
-        * risk_updates: dict of updated numeric fields
-    - Parameter changes are kept small (clamped) and only applied to
-      existing numeric attrs. Shorts are never enabled.
+        * risk_updates: numeric tweaks on risk_config
+        * overall_assessment: string
+        * detailed_recommendations: {risk, strategies, operations}
+    - Never enables short selling; clamps all numeric changes.
     """
 
     def __init__(
@@ -38,17 +33,15 @@ class AIController:
         model: str,
         interval_loops: int = 12,
         temperature: float = 0.2,
-        max_output_tokens: int = 512,
         enabled: bool = True,
     ) -> None:
         self.model = model
         self.interval_loops = max(1, int(interval_loops))
-        self.temperature = float(temperature)  # currently unused
-        self.max_output_tokens = int(max_output_tokens)
+        # Stored but not actually sent; some chat models reject temperature here.
+        self.temperature = float(temperature)
 
         self._loop_counter = 0
 
-        # OpenAI client setup
         if not enabled:
             self.enabled = False
             self.client = None
@@ -66,7 +59,7 @@ class AIController:
         api_key = (
             os.getenv("HFTA_OPENAI_API_KEY")
             or os.getenv("OPENAI_API_KEY")
-            or os.getenv("openai_api_key")  # just in case
+            or os.getenv("openai_api_key")
         )
 
         if not api_key:
@@ -74,12 +67,10 @@ class AIController:
             self.client = None
             logger.warning(
                 "AIController disabled: no OpenAI API key found. "
-                "Set HFTA_OPENAI_API_KEY or OPENAI_API_KEY in your environment "
-                "to enable AI tuning."
+                "Set HFTA_OPENAI_API_KEY or OPENAI_API_KEY to enable AI tuning."
             )
             return
 
-        # If we reach here, AI is enabled
         self.client = OpenAI(api_key=api_key)
         self.enabled = True
         logger.info(
@@ -100,7 +91,7 @@ class AIController:
         tracker: Any,
     ) -> None:
         """
-        Called by Engine once per event-loop iteration via keyword args.
+        Called once per Engine loop iteration.
         """
         self.maybe_run(
             risk_config=risk_config,
@@ -142,7 +133,6 @@ class AIController:
                 strategies=strategies,
             )
         except Exception as exc:
-            # Never crash the engine because of AI issues
             logger.warning("AIController error: %s", exc, exc_info=True)
 
     # ------------------------------------------------------------------ #
@@ -155,13 +145,6 @@ class AIController:
         strategies: List[Any],
         execution_tracker: Any,
     ) -> str:
-        """
-        Build a compact JSON string of:
-            - total realized PnL
-            - per-symbol positions
-            - selected risk_config fields
-            - selected strategy parameters
-        """
         state: Dict[str, Any] = {}
 
         # Positions / realized PnL
@@ -195,7 +178,7 @@ class AIController:
         state["realized_pnl_total"] = realized_total
         state["positions"] = positions_out
 
-        # Risk config (only simple fields)
+        # Risk config (simple fields only)
         risk_info: Dict[str, Any] = {}
         for key in (
             "max_notional_per_order",
@@ -251,12 +234,9 @@ class AIController:
         """
         Call the model and return a parsed JSON object.
 
-        Notes:
-        - We DO NOT pass temperature, because this has produced
-          `unsupported_value` errors for some chat models.
-        - We DO NOT use `response_format` / JSON mode, since content shapes
-          have been changing. We instead ask for JSON in plain text and parse.
-        - If anything goes wrong, we log and return an empty dict.
+        Supports both:
+        - JSON mode (message.parsed populated, message.content == [])
+        - Plain-text JSON (message.content is a string or list of parts)
         """
         if self.client is None:
             raise RuntimeError("AIController client not initialized")
@@ -264,8 +244,8 @@ class AIController:
         system_prompt = (
             "You are a cautious but proactive trading-parameter assistant for a "
             "small intraday equities system running on paper only. "
-            "You must preserve risk control while trying to incrementally "
-            "improve risk-adjusted returns."
+            "You must preserve risk control while incrementally improving "
+            "risk-adjusted returns."
         )
 
         user_prompt = (
@@ -298,8 +278,7 @@ class AIController:
             resp = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                # DO NOT send temperature; some models reject it
-                max_completion_tokens=self.max_output_tokens,
+                # No temperature / response_format – avoid unsupported params.
             )
         except Exception as exc:
             logger.warning(
@@ -308,9 +287,28 @@ class AIController:
             return {}
 
         msg = resp.choices[0].message
+
+        # 1) Prefer JSON-mode field, if present.
+        parsed_raw = getattr(msg, "parsed", None)
+        if parsed_raw is not None:
+            try:
+                if isinstance(parsed_raw, str):
+                    parsed_obj = json.loads(parsed_raw)
+                else:
+                    parsed_obj = parsed_raw
+                if isinstance(parsed_obj, Mapping):
+                    return parsed_obj
+            except Exception as exc:
+                logger.warning(
+                    "AIController: failed to parse message.parsed JSON: %r (%s)",
+                    parsed_raw,
+                    exc,
+                    exc_info=True,
+                )
+
+        # 2) Fall back to message.content (string or list of parts).
         raw_content = getattr(msg, "content", None)
 
-        # Handle both string and list-of-parts shapes.
         if isinstance(raw_content, list):
             parts: List[str] = []
             for part in raw_content:
@@ -340,7 +338,7 @@ class AIController:
             )
             return {}
 
-        # Try to parse JSON; if the model wrapped it with text, strip around it.
+        # Try to parse JSON; if wrapped in extra text, strip around braces.
         def _parse_json(text: str) -> Optional[Mapping[str, Any]]:
             try:
                 parsed_local = json.loads(text)

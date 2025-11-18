@@ -76,8 +76,7 @@ def build_ai_controller(cfg: Dict[str, Any], logger) -> AIController | None:
           "enabled": true,
           "model": "gpt-5-mini",
           "interval_loops": 12,
-          "temperature": 0.2,
-          "max_output_tokens": 512
+          "temperature": 0.2
         }
     """
     ai_cfg = cfg.get("ai", {})
@@ -89,13 +88,11 @@ def build_ai_controller(cfg: Dict[str, Any], logger) -> AIController | None:
     model = ai_cfg.get("model", "gpt-5-mini")
     interval_loops = int(ai_cfg.get("interval_loops", 12))
     temperature = float(ai_cfg.get("temperature", 0.2))
-    max_output_tokens = int(ai_cfg.get("max_output_tokens", 512))
 
     controller = AIController(
         model=model,
         interval_loops=interval_loops,
         temperature=temperature,
-        max_output_tokens=max_output_tokens,
         enabled=True,
     )
     logger.debug(
