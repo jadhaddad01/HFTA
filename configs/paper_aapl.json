@@ -1,44 +1,46 @@
 {
   "paper_cash": 100000.0,
-  "poll_interval": 5.0,
-  "symbols": [
-    "AAPL"
-  ],
+  "poll_interval": 1.0,
+
+  "symbols": ["AAPL"],
+
+  "universe": {
+    "enabled": true,
+    "max_symbols": 50,
+    "min_price": 5.0,
+    "max_price": 500.0,
+    "min_dollar_volume": 20000000,
+    "lookback_days": 3
+  },
+
+  "data": {
+    "quote_source": "yfinance",
+    "max_workers": 8
+  },
+
   "risk": {
     "max_notional_per_order": 1000.0,
     "max_cash_utilization": 0.1,
     "allow_short_selling": false
   },
+
   "strategies": [
     {
       "type": "micro_market_maker",
       "name": "mm_AAPL",
       "config": {
-        "symbol": "AAPL",
-        "max_inventory": 2,
-        "spread": 0.05,
-        "order_quantity": 1,
-        "min_spread": 0.02,
-        "max_spread": 0.2,
-        "vol_window": 50,
-        "vol_to_spread": 2.0
+        "symbol": "AAPL"
       }
     },
     {
       "type": "micro_trend_scalper",
-      "name": "scalper_AAPL",
+      "name": "trend_AAPL",
       "config": {
-        "symbol": "AAPL",
-        "order_quantity": 1,
-        "short_window": 5,
-        "long_window": 20,
-        "trend_threshold": 0.0005,
-        "max_position": 5,
-        "trailing_stop_pct": 0.01,
-        "take_profit_pct": 0.02
+        "symbol": "AAPL"
       }
     }
   ],
+
   "ai": {
     "enabled": true,
     "model": "gpt-5-mini",

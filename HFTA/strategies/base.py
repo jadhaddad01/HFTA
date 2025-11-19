@@ -1,6 +1,7 @@
 # HFTA/strategies/base.py
 
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -9,12 +10,17 @@ from HFTA.broker.client import Quote
 
 @dataclass
 class OrderIntent:
+    """
+    Simple container describing an order request emitted by a Strategy.
+    """
     symbol: str
     side: str          # "buy" or "sell"
     quantity: float
     order_type: str    # "limit", "market", etc.
+    # Optional fields
+    strategy_name: Optional[str] = None
     limit_price: Optional[float] = None
-    meta: Dict[str, Any] = None
+    meta: Optional[Dict[str, Any]] = None
 
 
 class Strategy:
